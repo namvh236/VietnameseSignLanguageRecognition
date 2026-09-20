@@ -17,19 +17,32 @@ logger = get_logger(__name__)
 # se sinh cau kem han. (Chi comment trong code moi viet khong dau.)
 SYSTEM_PROMPT = (
     "Bạn là trợ lý dịch ngôn ngữ ký hiệu tiếng Việt. Đầu vào là danh sách các từ (gloss) "
-    "nhận dạng được từ người ký hiệu, theo đúng thứ tự thể hiện. Nhiệm vụ của bạn: ghép "
-    "chúng thành MỘT câu tiếng Việt tự nhiên, đúng ngữ pháp, dễ hiểu.\n"
-    "QUY TẮC BẮT BUỘC:\n"
-    "- Dùng ĐỦ và ĐÚNG tất cả các từ đã cho, giữ nguyên thứ tự xuất hiện.\n"
-    "- KHÔNG thêm từ mang nghĩa mới, KHÔNG bịa nội dung, KHÔNG bỏ bớt từ nào.\n"
-    "- Chỉ được thêm tối thiểu hư từ/từ nối (là, và, thì, của, đang, ạ, ơi, không...) "
-    "và dấu câu khi thật cần thiết để câu đúng ngữ pháp.\n"
-    "- Nếu chỉ có một từ, trả về đúng từ đó (viết hoa chữ đầu, thêm dấu câu).\n"
+    "nhận dạng được từ người ký hiệu, theo đúng thứ tự thể hiện. Ngôn ngữ ký hiệu lược bỏ "
+    "hư từ và chủ ngữ hiển nhiên, nên nhiệm vụ của bạn là khôi phục chúng để thành MỘT câu "
+    "tiếng Việt nói tự nhiên, đúng ngữ pháp, lịch sự.\n"
+    "QUY TẮC:\n"
+    "1. Giữ ĐỦ tất cả các từ đã cho, ĐÚNG thứ tự — chúng là bộ khung của câu. Không bỏ, "
+    "không đảo thứ tự.\n"
+    "2. ĐƯỢC thêm hư từ, từ nối, tiểu từ tình thái: là, và, thì, mà, của, đang, rồi, một, "
+    "ạ, ơi, với, nhé, nhỉ, không.\n"
+    "3. ĐƯỢC thêm chủ ngữ hiển nhiên mà tiếng Việt bắt buộc phải có khi từ đã cho chỉ là "
+    "một tính từ trạng thái. Thời tiết (nóng, lạnh, mưa, nắng, gió) cần chủ ngữ 'trời'.\n"
+    "4. ĐƯỢC chuyển từ điển sang dạng nói tự nhiên: 'ngày' ở đầu câu → 'hôm nay'; từ chỉ "
+    "người ở đầu một lời nhờ vả/xin phép → thêm 'ơi' để gọi (bác sĩ → 'bác sĩ ơi').\n"
+    "5. Câu là lời nhờ vả, xin phép thì kết bằng 'với', 'ạ', 'nhé' cho tự nhiên.\n"
+    "6. NGOÀI các phép thêm ở mục 2-5, KHÔNG thêm từ mang nghĩa mới: không thêm động từ, "
+    "danh từ, tên người, địa điểm, thời gian nào không có trong danh sách. Không bịa nội dung.\n"
+    "7. Dùng dấu phẩy tách hai mệnh đề nếu câu có hai ý. Viết hoa chữ đầu câu.\n"
+    "8. Nếu chỉ có một từ, trả về đúng từ đó (viết hoa chữ đầu, thêm dấu câu).\n"
     "VÍ DỤ:\n"
-    "- Từ: tôi, muốn, ăn, cơm → Tôi muốn ăn cơm.\n"
-    "- Từ: mẹ, đi, chợ → Mẹ đi chợ.\n"
-    "- Từ: anh, khỏe, không → Anh khỏe không?\n"
-    "- Từ: xin chào → Xin chào.\n"
+    "- Từ: Ngày, Nóng, Em, Muốn, Uống, Nước → Hôm nay trời nóng, em muốn uống nước.\n"
+    "- Từ: Bác sĩ, Khám bệnh, Cho, Cháu → Bác sĩ ơi, khám bệnh cho cháu với.\n"
+    "- Từ: Ngày, Mưa, Em, Không, Đi, Học → Hôm nay trời mưa, em không đi học.\n"
+    "- Từ: Cô, Giúp, Cho, Em → Cô ơi, giúp cho em với.\n"
+    "- Từ: Tôi, Muốn, Ăn, Cơm → Tôi muốn ăn cơm.\n"
+    "- Từ: Mẹ, Đi, Chợ → Mẹ đi chợ.\n"
+    "- Từ: Anh, Khỏe, Không → Anh khỏe không?\n"
+    "- Từ: Xin chào → Xin chào.\n"
     "Chỉ trả về câu kết quả, không giải thích, không dùng thẻ <think> hay định dạng đặc biệt."
 )
 
@@ -89,14 +102,17 @@ class LLMService:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": f"Cac tu nhan dang duoc: {', '.join(gloss_sequence)} /no_think",
+                    # Tieng Viet CO DAU (xem ghi chu o SYSTEM_PROMPT) — cau user truoc day
+                    # viet khong dau, lam lech phan phoi so voi system prompt co dau.
+                    "content": f"Các từ nhận dạng được: {', '.join(gloss_sequence)} /no_think",
                 },
             ],
             # Tat reasoning ngay tu API (nhanh nhat + tranh lo <think>); /no_think trong
             # prompt giu lai lam du phong cho ban Ollama cu chua ho tro "think".
             "think": False,
             "options": {
-                "temperature": 0.3,
+                # Thap de output on dinh (day la tac vu ghep cau co rang buoc, khong can sang tao).
+                "temperature": 0.15,
                 "num_predict": settings.ollama_num_predict,
             },
             "keep_alive": settings.ollama_keep_alive,

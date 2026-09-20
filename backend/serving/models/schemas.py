@@ -116,3 +116,30 @@ class ComposeResponse(BaseModel):
     # WAV base64 (frontend giai ma bang base64ToAudioUrl); None neu TTS loi/khong san sang.
     audio_b64: str | None = None
     mime: str = "audio/wav"
+
+
+class CachedGloss(BaseModel):
+    """Mot tu trong ket qua da cache, kem moc thoi gian xuat hien trong video (giay)."""
+
+    text: str
+    at: float = 0.0
+
+
+class CachedResultPayload(BaseModel):
+    """Client gui len sau mot lan chay THANH CONG de lan sau khong phai chay lai."""
+
+    glosses: list[CachedGloss] = Field(..., min_length=1)
+    sentence: str
+    duration: float | None = None
+    # WAV base64 cua lan chay do (client da co san). None -> cache khong kem giong noi.
+    audio_b64: str | None = None
+
+
+class CachedResultResponse(BaseModel):
+    glosses: list[CachedGloss]
+    sentence: str
+    duration: float | None = None
+    audio_b64: str | None = None
+    mime: str = "audio/wav"
+    # 'live' = ket qua tu mot lan chay that tren web; 'prebake' = script chuan bi truoc.
+    source: str = "live"

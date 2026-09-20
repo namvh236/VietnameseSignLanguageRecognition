@@ -8,3 +8,6 @@ __pycache__/
 # Trong so model khong commit; lay tu recognition/ khi chay.
 weights/*
 !weights/.gitkeep
+
+# Cache ket qua dich theo file video (prebake demo)
+cache/

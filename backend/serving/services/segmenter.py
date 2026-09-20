@@ -14,6 +14,9 @@ from collections import deque
 import numpy as np
 
 from serving.models.schemas import NUM_JOINTS, SLGCN_NUM_JOINTS
+from serving.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # Chi so khop than trong layout SPOTER 54-khop (thu tu JointSelect):
 #   [nose, neck, rightEye, leftEye, rightEar, leftEar,
@@ -22,6 +25,20 @@ _SIDES = {
     "LEFT": (7, 9, 11),   # (shoulder, elbow, wrist)
     "RIGHT": (6, 8, 10),
 }
+
+# Khoi 21 khop cua tung ban tay trong layout 54-khop (12 khop than roi tay TRAI roi tay PHAI).
+_HAND_SLICES = (slice(12, 33), slice(33, 54))
+
+
+def _hand_present(spoter_kp: np.ndarray) -> bool:
+    """Co it nhat MOT ban tay duoc MediaPipe Hands phat hien trong frame nay?
+
+    Khop tay khong nhan dien duoc = [0, 0] (xem frontend/src/utils/keypoints.js), nen chi can
+    kiem tra co khop tay nao khac 0. Day la cong loc CHINH chong false positive: MediaPipe Pose
+    van doan toa do co tay/khuyu du tay ngoai khung, nhung Hands thi khong — khong co ban tay
+    thi chac chan khong phai dang ky hieu.
+    """
+    return any(bool(np.any(spoter_kp[s])) for s in _HAND_SLICES)
 
 
 def _arm_angle(shoulder, elbow, wrist) -> float:
@@ -53,6 +70,7 @@ class KeypointSegmenter:
         max_sign_frames: int,
         preroll_frames: int,
         min_wrist_motion_px: float,
+        min_hand_frames_ratio: float,
     ):
         self.angle_threshold = angle_threshold
         self.min_up_frames = min_up_frames
@@ -60,6 +78,7 @@ class KeypointSegmenter:
         self.min_sign_frames = min_sign_frames
         self.max_sign_frames = max_sign_frames
         self.min_wrist_motion_px = min_wrist_motion_px
+        self.min_hand_frames_ratio = min_hand_frames_ratio
         self._preroll_spoter: deque = deque(maxlen=preroll_frames)
         self._preroll_slgcn: deque = deque(maxlen=preroll_frames)
         self.reset()
@@ -75,7 +94,13 @@ class KeypointSegmenter:
         self._preroll_slgcn.clear()
 
     def _hands_up(self, spoter_kp: np.ndarray):
-        """(tay dang gio?, toa do co tay nhin thay). spoter_kp: (54, 2) pixel."""
+        """(tay dang gio?, toa do co tay nhin thay). spoter_kp: (54, 2) pixel.
+
+        "Dang gio" = goc khuyu < nguong VA co ban tay duoc phat hien. Thieu dieu kien ban tay
+        thi tu the ngoi thuong (tay de tren ban, khuyu gap ~90-140 do) bi coi la dang ky hieu.
+        """
+        if not _hand_present(spoter_kp):
+            return False, []
         up = False
         wrists = []
         for shoulder_i, elbow_i, wrist_i in _SIDES.values():
@@ -123,8 +148,9 @@ class KeypointSegmenter:
         self._wrist_track.append(wrist)
         self.down_count = 0 if up else self.down_count + 1
 
-        finished = self.down_count >= self.min_down_frames or len(self._spoter_buf) >= self.max_sign_frames
-        if not finished:
+        ended_by_hands_down = self.down_count >= self.min_down_frames
+        overflowed = len(self._spoter_buf) >= self.max_sign_frames
+        if not (ended_by_hands_down or overflowed):
             return None
 
         spoter_buf, slgcn_buf, track = self._spoter_buf, self._slgcn_buf, self._wrist_track
@@ -138,6 +164,12 @@ class KeypointSegmenter:
         self._preroll_spoter.clear()
         self._preroll_slgcn.clear()
 
+        if not ended_by_hands_down:
+            # Tran max_sign_frames ma CHUA HE thay tay ha: gan nhu chac chan la doan rac (tay cu
+            # trong khung, khong co ranh gioi ky hieu). Bo clip thay vi doan bua mot nhan.
+            logger.debug("Bo clip tran %d frame ma khong thay ha tay.", len(spoter_buf))
+            return None
+
         return self._finalize_clip(spoter_buf, slgcn_buf, track)
 
     def flush(self) -> tuple[np.ndarray, np.ndarray | None] | None:
@@ -150,8 +182,16 @@ class KeypointSegmenter:
 
     def _finalize_clip(self, spoter_buf, slgcn_buf, track):
         if len(spoter_buf) < self.min_sign_frames:
+            logger.debug("Bo clip qua ngan (%d frame).", len(spoter_buf))
             return None  # qua ngan -> nhieu
-        if _track_motion(track) < self.min_wrist_motion_px:
+        hand_ratio = sum(_hand_present(f) for f in spoter_buf) / len(spoter_buf)
+        if hand_ratio < self.min_hand_frames_ratio:
+            # Preroll co the toan frame khong co tay -> chi bo khi ca clip thieu tay.
+            logger.debug("Bo clip thieu ban tay (ti le %.2f).", hand_ratio)
+            return None
+        motion = _track_motion(track)
+        if motion < self.min_wrist_motion_px:
+            logger.debug("Bo clip tay gan nhu dung yen (%.1f px).", motion)
             return None  # tay gan nhu dung yen -> tu the nghi, khong phai ky hieu
         spoter_clip = np.stack(spoter_buf).astype(np.float32)  # (T, 54, 2)
         # Chi fuse khi CO du frame SL-GCN cho toan clip (dong bo thoi gian).

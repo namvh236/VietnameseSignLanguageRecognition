@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from serving.config import settings
 from serving.dependencies import get_llm
-from serving.routers import health, recognize, recognize_video, tts, websocket
+from serving.routers import cache, health, recognize, recognize_video, tts, websocket
 from serving.utils.logger import get_logger
 from serving.utils.warmup import warmup_all
 
@@ -35,4 +35,5 @@ app.include_router(websocket.router)
 app.include_router(recognize.router, prefix="/api")
 app.include_router(recognize_video.router, prefix="/api")
 app.include_router(tts.router, prefix="/api")
+app.include_router(cache.router, prefix="/api")
 app.include_router(health.router)

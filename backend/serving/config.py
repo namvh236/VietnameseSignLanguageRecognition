@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # xem video_confidence_threshold). Khi client KHONG gui keypoint SL-GCN -> lui ve SPOTER-only
     # va dung spoter_confidence_threshold. Se can tinh chinh tren validation.
     fusion_confidence_threshold: float = 0.12
+    # Rieng luong WS REALTIME dung nguong CAO hon (0.12 -> 0.30): khac luong video-file (nguoi
+    # dung chu dong bam nhan dang mot clip da quay san), realtime chay lien tuc nen moi doan rac
+    # deu co co hoi thanh gloss ao. Trong so fusion KHONG doi (van 0.75/0.25).
+    realtime_fusion_confidence_threshold: float = 0.30
 
     # Loc cua so "co dang ky hieu" truoc khi goi model (chong false positive khi
     # tay nghi hoac khong xuat hien trong camera — model luon tra ve MOT lop nao do).
@@ -73,7 +77,10 @@ class Settings(BaseSettings):
     # tay ha xuong = ket thuc -> cat clip tron 1 ky hieu (dai bien thien), moi nhanh pad
     # theo contract rieng (SPOTER 70 / SL-GCN 150). Port tu RealtimeSegmenter cua demo.
     # Nguoi ky HA TAY giua cac tu de cat sach (model la isolated-sign, khong phai CSLR).
-    seg_angle_threshold: float = 150.0   # goc khuyu < nguong = "tay dang gio" (do)
+    # Goc khuyu < nguong = "tay dang gio" (do). 150 qua CAO: ngoi truoc webcam, tay de tren ban
+    # /tren dui thi khuyu da gap ~90-140 do -> luon bi coi la dang ky hieu (tay buong thang moi
+    # ~180). 115 doi hoi tay thuc su gio len. Segmenter con doi CO BAN TAY duoc phat hien nua.
+    seg_angle_threshold: float = 115.0
     seg_min_up_frames: int = 3           # so frame tay-len lien tuc de bat dau
     # So frame tay-xuong lien tuc de chot ket thuc. DE CAO (12) vi keypoint stream KHONG
     # duoc smooth (demo dung Pose smooth_landmarks=True): mot khoang khung nhe GIUA ky hieu
@@ -81,9 +88,9 @@ class Settings(BaseSettings):
     # dai hon han. Neu van bi cat giua ky hieu -> tang them.
     seg_min_down_frames: int = 12        # so frame tay-xuong lien tuc de chot ket thuc
     seg_min_sign_frames: int = 8         # clip ngan hon -> bo (nhieu)
-    # Cap an toan: clip dai hon -> tu chot (tranh dinh 2 tu khi KHONG bat duoc ha tay).
-    # De CAO vi tin hieu cat chinh la HA TAY; cap chi chan clip chay dai vo han. Mot ky
-    # hieu don co the dai ~4-5s (vd "Em" ~136 frame @30fps) nen 90 se cat cut giua ky hieu.
+    # Cap an toan: clip dai hon -> DUNG lai va BO clip (khong doan nhan). Tin hieu cat chinh la
+    # HA TAY; clip cham cap tuc la chua he thay tay ha -> gan nhu chac chan la doan rac (tay cu
+    # trong khung). Mot ky hieu don co the dai ~4-5s (vd "Em" ~136 frame @30fps) nen giu 160.
     seg_max_sign_frames: int = 160
     # Dem truoc (frame giu lai TRUOC khi phat hien tay-len). DE CAO (20): SPOTER Pad(70) chi
     # giu 70 frame dau, va model duoc train tren clip CO doan dan nhap (tay dang gio len). Cat
@@ -91,7 +98,9 @@ class Settings(BaseSettings):
     # preroll=20 phuc hoi ca hai (test len 8/8). Trong luong lien tuc, day chinh la doan nghi/
     # gio tay giua 2 tu (nguoi ky ha tay ro giua cac tu) -> khong lan sang tu truoc.
     seg_preroll_frames: int = 20         # dem truoc de khong cat cut dau ky hieu
-    seg_min_wrist_motion_px: float = 12.0  # bien do di chuyen co tay toi thieu (pixel) -> loc tu the nghi
+    # Bien do di chuyen co tay toi thieu (pixel) -> loc tu the nghi. 12 qua THAP: jitter cua
+    # MediaPipe tren mot clip vai giay da vuot qua. Ky hieu that di chuyen co tay hang tram pixel.
+    seg_min_wrist_motion_px: float = 40.0
 
     # Nhan dang tu file video (upload/quay) — dung LATE-FUSION.
     # LUU Y QUAN TRONG: xac suat FUSION phang hon SPOTER-only rat nhieu (SL-GCN 0.75 la
@@ -108,6 +117,11 @@ class Settings(BaseSettings):
     #   nen giu 1. Muon nhanh hon (chap nhan giam chinh xac) co the dat 0 qua env.
     video_pose_model_complexity: int = 0  # MediaPipe Pose cho phan doan (0/1/2)
     video_holistic_model_complexity: int = 1  # MediaPipe Holistic cho phan loai (0/1/2)
+
+    # Cache ket qua theo file video (an toan cho demo): video da xu ly mot lan thi lan sau
+    # phat lai ngay, khong chay lai MediaPipe/ONNX/LLM/TTS. Xem services/result_cache.py.
+    result_cache_enabled: bool = True
+    result_cache_dir_name: str = "cache/results"
 
     # Server
     server_host: str = "0.0.0.0"
@@ -129,6 +143,10 @@ class Settings(BaseSettings):
     @property
     def gloss_csv_path(self) -> Path:
         return self.recognition_root / self.gloss_csv_name
+
+    @property
+    def result_cache_dir(self) -> Path:
+        return self.recognition_root / self.result_cache_dir_name
 
 
 @lru_cache
