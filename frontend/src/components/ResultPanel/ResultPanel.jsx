@@ -2,7 +2,7 @@ import useSignStore from '../../store/useSignStore'
 import GlossBadgeList from './GlossBadgeList'
 import SentenceDisplay from './SentenceDisplay'
 import AudioPlayer from './AudioPlayer'
-import { Trash2, MessageSquare, Venus, Mars } from 'lucide-react'
+import { Trash2, MessageSquare, Venus, Mars, AlertTriangle } from 'lucide-react'
 
 const SOURCE_LABELS = {
   realtime: 'Realtime',
@@ -16,14 +16,14 @@ export default function ResultPanel() {
   const result = useSignStore(s => s.sources[s.activeSource])
   const clearSession = useSignStore(s => s.clearSession)
 
-  const { glosses, sentence, audioUrl, isProcessing, history } = result
+  const { glosses, sentence, audioUrl, isProcessing, history, noSign } = result
 
   const voiceGender = useSignStore(s => s.voiceGender)
   const toggleVoiceGender = useSignStore(s => s.toggleVoiceGender)
   const voiceSpeed = useSignStore(s => s.voiceSpeed)
   const cycleVoiceSpeed = useSignStore(s => s.cycleVoiceSpeed)
 
-  const hasAnyData = glosses.length > 0 || sentence || audioUrl || isProcessing
+  const hasAnyData = glosses.length > 0 || sentence || audioUrl || isProcessing || noSign
 
   return (
     <div className="flex flex-col h-full p-6 bg-white/70 dark:bg-slate-950/40 backdrop-blur-md border-t md:border-t-0 md:border-l border-slate-200 dark:border-slate-900 transition-colors duration-300">
@@ -87,6 +87,17 @@ export default function ResultPanel() {
             <GlossBadgeList glosses={glosses} />
           </div>
         </section>
+
+        {/* Hết phiên mà không ký hiệu nào đủ tin cậy: nói rõ ra, đừng để panel trống trơn */}
+        {noSign && glosses.length === 0 && (
+          <div className="flex items-start gap-2.5 px-4 py-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400">
+            <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+            <p className="text-xs font-semibold leading-relaxed">
+              Không nhận được ký hiệu nào đủ tin cậy nên chưa ghép được câu. Hãy ký chậm và rõ
+              hơn, giữ hai tay trong khung hình và hạ tay giữa các từ.
+            </p>
+          </div>
+        )}
 
         {/* Full Translated Sentence */}
         <section className="flex flex-col gap-2">

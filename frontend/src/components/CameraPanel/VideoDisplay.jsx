@@ -2,11 +2,12 @@ import { useRef, useEffect, useState } from 'react'
 import { Camera, CameraOff, Activity, Loader2 } from 'lucide-react'
 import useSignStore from '../../store/useSignStore'
 import { extractKeypoints, extractSlgcnKeypoints } from '../../utils/keypoints'
+import { getHolistic, isHolisticReady, setResultsHandler } from '../../services/holistic'
+import { drawSkeleton } from '../../utils/drawSkeleton'
 
-// Singleton instance to prevent multiple asset downloads and re-initialization
+// Instance do services/holistic.js quản lý (dùng chung với trình phát video upload);
+// ở đây chỉ giữ tham chiếu cho vòng lặp.
 let globalHolistic = null
-let isHolisticLoading = false
-let onResultsCallback = null
 
 export default function VideoDisplay({ videoRef, error, onKeypoints }) {
   const isCameraOn = useSignStore(s => s.isCameraOn)
@@ -17,65 +18,25 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
 
   const [isModelLoading, setIsModelLoading] = useState(false)
 
-  // 1. Eagerly warm up/initialize MediaPipe Holistic once when camera is on
+  // 1. Nạp sẵn MediaPipe Holistic (singleton dùng chung) ngay khi bật camera.
   useEffect(() => {
-    if (!isCameraOn || globalHolistic || isHolisticLoading) return
+    if (!isCameraOn || isHolisticReady()) return
 
-    let retryTimer = null
     let cancelled = false
+    setIsModelLoading(true)
 
-    const initMediaPipe = async () => {
-      if (cancelled) return
-      if (!window.Holistic) {
-        // Retry shortly if scripts are still downloading
-        retryTimer = setTimeout(initMediaPipe, 500)
-        return
-      }
-
-      try {
-        isHolisticLoading = true
-        setIsModelLoading(true)
-
-        const holistic = new window.Holistic({
-          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`
-        })
-
-        // Cân bằng giữa độ trễ và độ chính xác của bàn tay.
-        holistic.setOptions({
-          // 1 = Full: model pose tốt hơn -> vùng cắt (ROI) bàn tay chuẩn hơn ->
-          // KHÔNG bị mất khung xương tay khi đưa tay lên. (0/Lite bắt tay rất kém.)
-          // Nếu máy yếu và thấy trễ nặng, hạ lại về 0.
-          modelComplexity: 1,
-          smoothLandmarks: true,
-          refineFaceLandmarks: false, // Không cần face mesh chi tiết cho app này
-          // Hạ ngưỡng để bắt được tay khi chuyển động nhanh (đưa tay lên).
-          minDetectionConfidence: 0.4,
-          minTrackingConfidence: 0.4
-        })
-
-        holistic.onResults((results) => {
-          if (onResultsCallback) {
-            onResultsCallback(results)
-          }
-        })
-
-        globalHolistic = holistic
-        isHolisticLoading = false
+    getHolistic()
+      .then((instance) => {
+        globalHolistic = instance
         if (!cancelled) setIsModelLoading(false)
-        console.log("MediaPipe Holistic warmed up and ready.")
-      } catch (err) {
-        console.error("Failed to eagerly load MediaPipe Holistic:", err)
-        isHolisticLoading = false
+      })
+      .catch((err) => {
+        console.error('Không nạp được MediaPipe Holistic:', err)
         if (!cancelled) setIsModelLoading(false)
-      }
-    }
-
-    initMediaPipe()
+      })
 
     return () => {
-      // Dừng vòng retry chờ script CDN khi tắt camera/unmount.
       cancelled = true
-      if (retryTimer) clearTimeout(retryTimer)
     }
   }, [isCameraOn])
 
@@ -91,7 +52,11 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
     // ~25 fps: 70 frame buffer của backend ~ 2.8s, xấp xỉ độ dài một ký hiệu.
     const SEND_INTERVAL_MS = 40
 
-    onResultsCallback = (results) => {
+    // Luôn lấy lại, không cache: luồng video có thể đã dựng instance mới sau khi mất ngữ
+    // cảnh WebGL, giữ tham chiếu cũ là dùng đồ đã hỏng.
+    getHolistic().then((i) => { globalHolistic = i }).catch(() => {})
+
+    setResultsHandler((results) => {
       if (!active) return
 
       // Gửi keypoint cho backend (độc lập với việc vẽ khung xương).
@@ -102,60 +67,10 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
         onKeypoints(extractKeypoints(results, w, h), extractSlgcnKeypoints(results, w, h))
       }
 
-      // Vẽ khung xương chỉ khi bật.
-      const canvas = canvasRef.current
-      const ctx = canvas?.getContext('2d')
-      if (!showSkeleton || !canvas || !ctx || !w || !h) return
-
-      // Canvas dùng TOẠ ĐỘ GỐC của video (videoWidth/Height). Canvas có cùng
-      // CSS object-cover với <video> nên trình duyệt scale y hệt -> khung xương
-      // khớp chính xác với hình (trước đây canvas theo kích thước container -> lệch).
-      // Chỉ gán lại size khi đổi (gán canvas.width mỗi frame sẽ cấp phát lại buffer).
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w
-        canvas.height = h
+      if (showSkeleton && canvasRef.current) {
+        drawSkeleton(canvasRef.current, results, w, h)
       }
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-      // Không vẽ face mesh: app chỉ dùng thân + 2 bàn tay, vẽ FACEMESH_TESSELATION
-      // (hàng nghìn đoạn) mỗi frame là nguyên nhân chính gây trễ khung hình.
-      if (results.poseLandmarks && window.drawConnectors && window.POSE_CONNECTIONS) {
-        window.drawConnectors(ctx, results.poseLandmarks, window.POSE_CONNECTIONS, {
-          color: '#6366f1',
-          lineWidth: 2
-        })
-        window.drawLandmarks(ctx, results.poseLandmarks, {
-          color: '#ffffff',
-          fillColor: '#6366f1',
-          lineWidth: 1.2,
-          radius: 2.5
-        })
-      }
-      if (results.leftHandLandmarks && window.drawConnectors && window.HAND_CONNECTIONS) {
-        window.drawConnectors(ctx, results.leftHandLandmarks, window.HAND_CONNECTIONS, {
-          color: '#10b981',
-          lineWidth: 1.5
-        })
-        window.drawLandmarks(ctx, results.leftHandLandmarks, {
-          color: '#ffffff',
-          fillColor: '#10b981',
-          lineWidth: 1,
-          radius: 2
-        })
-      }
-      if (results.rightHandLandmarks && window.drawConnectors && window.HAND_CONNECTIONS) {
-        window.drawConnectors(ctx, results.rightHandLandmarks, window.HAND_CONNECTIONS, {
-          color: '#f59e0b',
-          lineWidth: 1.5
-        })
-        window.drawLandmarks(ctx, results.rightHandLandmarks, {
-          color: '#ffffff',
-          fillColor: '#f59e0b',
-          lineWidth: 1,
-          radius: 2
-        })
-      }
-    }
+    })
 
     const processLoop = async () => {
       if (!active || !isCameraOn) return
@@ -177,7 +92,7 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
 
     return () => {
       active = false
-      onResultsCallback = null
+      setResultsHandler(null) // nhả quyền nhận kết quả cho trình phát video upload
     }
   }, [showSkeleton, isCameraOn, videoRef, onKeypoints])
 

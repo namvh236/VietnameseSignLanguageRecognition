@@ -16,6 +16,7 @@ export default function App() {
   const setSentence = useSignStore(s => s.setSentence)
   const setAudioUrl = useSignStore(s => s.setAudioUrl)
   const setProcessing = useSignStore(s => s.setProcessing)
+  const markFinished = useSignStore(s => s.markFinished)
   const setActiveSource = useSignStore(s => s.setActiveSource)
   const theme = useSignStore(s => s.theme)
 
@@ -71,20 +72,24 @@ export default function App() {
   useEffect(() => {
     if (view !== 'demo') return
 
-    // Kết quả realtime luôn ghi vào nguồn 'realtime' (độc lập với upload/record).
+    // Ghi kết quả vào nguồn đang stream. Đọc getState() ngay lúc có tin nhắn (không capture
+    // vào closure) để luôn lấy nguồn hiện tại.
+    const sink = () => useSignStore.getState().wsSink
+
     wsClient.connect({
       onStatus: setWsStatus,
-      onGloss: (g) => addGloss('realtime', g),
-      onSentence: (s) => setSentence('realtime', s),
-      onAudio: (url) => setAudioUrl('realtime', url),
-      onProcessing: (v) => setProcessing('realtime', v),
+      onGloss: (g) => addGloss(sink(), g),
+      onSentence: (s) => setSentence(sink(), s),
+      onAudio: (url) => setAudioUrl(sink(), url),
+      onProcessing: (v) => setProcessing(sink(), v),
+      onFinished: (info) => markFinished(sink(), info),
     })
 
     // Clean up connections on unmount
     return () => {
       wsClient.disconnect()
     }
-  }, [view, setWsStatus, addGloss, setSentence, setAudioUrl, setProcessing])
+  }, [view, setWsStatus, addGloss, setSentence, setAudioUrl, setProcessing, markFinished])
 
   const startDemo = () => {
     window.history.pushState({}, '', '?view=demo')
