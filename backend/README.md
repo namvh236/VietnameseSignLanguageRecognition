@@ -1,5 +1,7 @@
 # SignSpeak backend — VSL-400 serving
 
+**Tiếng Việt** | [English](README.en.md)
+
 Phiên bản **serving** của hệ thống dịch ngôn ngữ ký hiệu tiếng Việt (VSL):
 FastAPI + demo Gradio chạy 2 model ONNX (late-fusion SPOTER + SL-GCN), ghép câu bằng
 Qwen3 (Ollama) và đọc bằng VieNeu-TTS.
@@ -16,6 +18,7 @@ serving/                     # FastAPI: WS /ws/keypoints + REST
 src/
   ├── pipelines/spoter_graph_classification.py   # transform tiền xử lý SPOTER
   └── utils/constants.py                         # SLGCN_JOINTS, COCO_TO_POSE_FORMAT
+scripts/                     # download_weights.sh, eval_segmentation.py, prebake_videos.py
 models/
   ├── spoter/spoter_v3.onnx                      # (git-untracked)
   └── sl-gcn/sl_gcn_ensemble.onnx                # (git-untracked)
@@ -38,7 +41,7 @@ gloss thô ghép lại.
 ### Hợp đồng keypoint realtime (108 float / frame)
 
 Client (frontend) gửi keypoint đã qua MediaPipe Holistic + chọn khớp qua `/ws/keypoints`:
-54 khớp x (x, y), **tọa độ pixel**, theo thứ tự `JointSelect`: 12 khớp thân (nose, neck,
+54 khớp × (x, y), **tọa độ pixel**, theo thứ tự `JointSelect`: 12 khớp thân (nose, neck,
 rightEye, leftEye, rightEar, leftEar, rightShoulder, leftShoulder, rightElbow, leftElbow,
 rightWrist, leftWrist) rồi 21 khớp tay TRÁI rồi 21 khớp tay PHẢI. **Khớp index 1 (neck) phải
 là `[0, 0]`.**
@@ -49,8 +52,8 @@ là `[0, 0]`.**
   `gloss`/`processing`/`sentence`/`error` và **binary WAV** sau `sentence`.
 - `POST /api/recognize` — fallback one-shot: `{"frames": [[108 float], ...]}`.
 - `POST /api/recognize-video` — nhận file video, tự chạy MediaPipe Holistic + late-fusion
-  SPOTER/SL-GCN (giống `demo_gradio.py`).
+  SPOTER/SL-GCN (giống `demo_gradio.py`); chỉ trả gloss.
+- `POST /api/compose` — ghép danh sách gloss thành câu + audio.
 - `POST /api/tts` — `{"text": "..."}` → `audio/wav` bytes.
+- `GET /api/cache/{sha256}`, `POST /api/cache/{sha256}` — cache kết quả theo hash nội dung video.
 - `GET /health` — trạng thái spoter/ollama/tts.
-
-Chi tiết kiến trúc: `ARCHITECTURE.md`, `docs/local_fusion_deployment.md`.

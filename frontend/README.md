@@ -1,5 +1,7 @@
 # SignSpeak Frontend
 
+**Tiếng Việt** | [English](README.en.md)
+
 Giao diện web (React + Vite) cho hệ thống dịch ngôn ngữ ký hiệu tiếng Việt (VSL) SignSpeak.
 Dùng MediaPipe Holistic trong trình duyệt để trích keypoint từ webcam, gửi qua WebSocket tới
 backend FastAPI để nhận dạng ký hiệu, ghép câu và phát giọng nói.
@@ -18,24 +20,21 @@ src/
 ├── components/
 │   ├── CameraPanel/        # camera + gửi frame
 │   ├── ResultPanel/        # hiển thị gloss / câu / audio
-│   ├── ManualPanel/        # chế độ nhận dạng từng từ
-│   ├── LandingPage/
-│   └── ui/                 # component dùng chung
-├── hooks/                   # useCamera, useWebSocket
-├── services/                # ws.js, api.js — nơi duy nhất gọi network
-├── store/                   # Zustand store
-└── utils/                   # frameCapture, audioHelper
+│   ├── ManualPanel/        # tải video lên / quay video
+│   └── LandingPage/
+├── hooks/                  # useCamera
+├── services/               # ws.js, holistic.js, videoSignStream.js, resultCache.js
+├── store/                  # Zustand store (useSignStore)
+└── utils/                  # keypoints, drawSkeleton, videoHash, audioHelper
 ```
-
-Quy tắc cho AI coding agent: xem `AGENT.md`.
 
 ## Cài đặt & chạy
 
 ```bash
 npm install
 npm run dev       # http://localhost:5173
-npm run build      # build production
-npm run lint       # oxlint
+npm run build     # build production
+npm run lint      # oxlint
 ```
 
 ## Cấu hình môi trường

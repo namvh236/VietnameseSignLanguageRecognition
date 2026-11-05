@@ -1,5 +1,7 @@
 # SignSpeak
 
+**Tiếng Việt** | [English](README.en.md)
+
 **Hệ thống dịch ngôn ngữ ký hiệu tiếng Việt (VSL) thời gian thực** — nhận dạng cử chỉ từ
 webcam hoặc video, ghép thành câu tiếng Việt tự nhiên và đọc thành giọng nói.
 
@@ -73,14 +75,14 @@ cd backend && ./scripts/download_weights.sh
 
 ## Chạy
 
-**Cách nhanh nhất** — mở sẵn 3 tab terminal (backend / frontend / ollama):
+**Cách nhanh nhất** — một lệnh chạy cả backend + frontend (Ctrl+C để dừng tất cả):
 
 ```bash
-./run_demo_web.sh      # chạy
-./stop_demo_web.sh     # dừng tất cả
+./run_demo_web.sh
 ```
 
-Đợi backend nạp xong model (khoảng 20–30 giây) rồi mở **http://localhost:5173**.
+Script tự bật Ollama nếu có (native → Docker), log nằm ở `/tmp/signspeak/`. Đợi backend nạp
+xong model (khoảng 20–30 giây) rồi mở **http://localhost:5173**.
 
 **Chạy thủ công:**
 
