@@ -1,39 +1,55 @@
 #!/usr/bin/env bash
-# Mo 3 tab terminal cho demo web SignSpeak:
-#   1. backend  (FastAPI + ONNX tren GPU)
-#   2. frontend (Vite dev server)
-#   3. ollama   (qwen3:1.7b — buoc ghep cau)
-#
-# Chay:  ./run_demo_web.sh
-# Dung:  ./stop_demo_web.sh
+# Run backend (:8000) + frontend (:5173) in one terminal; Ctrl+C stops everything.
+set -uo pipefail
 
-set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODEL="${OLLAMA_MODEL:-qwen3:1.7b}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="${LOG_DIR:-/tmp/signspeak}"
+OLLAMA_URL="${OLLAMA_BASE_URL:-http://localhost:11434}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:1.7b}"
 
-if ! command -v gnome-terminal >/dev/null 2>&1; then
-  echo "Khong tim thay gnome-terminal." >&2
-  exit 1
-fi
+# A stale VIRTUAL_ENV makes uv use the wrong venv.
+unset VIRTUAL_ENV 2>/dev/null || true
 
-# gnome-terminal coi MOI THU sau '--' la cau lenh, nen khong the xau chuoi nhieu '--tab ... --'
-# trong cung mot lan goi (cac tab sau se bi nuot). Goi rieng tung lan: lan dau tao cua so,
-# cac lan sau '--tab' tu gan vao cua so do.
-# Danh dau tab bang bien MOI TRUONG da export, khong phai chuoi trong dong lenh: khi lenh
-# chinh ket thuc (hoac bi Ctrl+C), `exec bash` thay the tien trinh va dong lenh MAT sach —
-# nhung moi truong da export thi con nguyen. stop_demo_web.sh doc /proc/<pid>/environ de tim.
-open_tab() {
-  local title="$1" dir="$2" cmd="$3"
-  # 'exec bash' de tab khong dong sap khi Ctrl+C — con xem duoc log va chay lai.
-  gnome-terminal --tab --title="$title" --working-directory="$dir" \
-    -- bash -c "export SIGNSPEAK_DEMO_TAB=$title; $cmd; exec bash"
-  sleep 0.7   # cho cua so kip san sang de tab sau gan dung cho
+# shellcheck source=scripts/ollama.sh
+source "$ROOT_DIR/scripts/ollama.sh"
+
+PIDS=()
+TAIL_PID=""
+OLLAMA_SERVE_PID=""
+
+cleanup() {
+  trap - INT TERM EXIT
+  echo
+  echo "→ Đang dừng demo..."
+  local pid
+  for pid in "${PIDS[@]}"; do
+    kill -TERM -- "-$pid" 2>/dev/null || true
+  done
+  [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null
+  [ -n "$OLLAMA_SERVE_PID" ] && kill "$OLLAMA_SERVE_PID" 2>/dev/null
+  wait 2>/dev/null
+  exit 0
+}
+trap cleanup INT TERM EXIT
+
+# setsid gives each service its own process group, so cleanup also kills
+# children (uv -> uvicorn, npm -> vite).
+start() {
+  local name="$1" dir="$2"; shift 2
+  (cd "$dir" && exec setsid "$@" >"$LOG_DIR/$name.log" 2>&1) &
+  PIDS+=("$!")
 }
 
-# VIRTUAL_ENV con sot lai se lam 'uv run' tro nham venv -> phai xoa trong tab backend.
-open_tab "backend"  "$ROOT/backend"  'unset VIRTUAL_ENV; uv run uvicorn serving.main:app --host 0.0.0.0 --port 8000'
-open_tab "frontend" "$ROOT/frontend" 'npm run dev'
-open_tab "ollama"   "$ROOT"          "ollama run $MODEL"
+mkdir -p "$LOG_DIR"
+ensure_ollama
 
-echo "Da mo 3 tab: backend / frontend / ollama ($MODEL)."
-echo "Doi backend nap xong model roi mo: http://localhost:5173"
+start backend  "$ROOT_DIR/backend"  uv run uvicorn serving.main:app --host 0.0.0.0 --port 8000
+start frontend "$ROOT_DIR/frontend" npm run dev
+
+echo "→ Backend: http://localhost:8000 | Frontend: http://localhost:5173"
+echo "→ Đợi backend nạp model (~20–30s). Log: ${LOG_DIR}/{backend,frontend}.log. Ctrl+C để dừng."
+
+tail -n 0 -F "$LOG_DIR/backend.log" "$LOG_DIR/frontend.log" &
+TAIL_PID=$!
+wait -n "${PIDS[@]}"
+echo "⚠️  Một service đã thoát — xem log trong ${LOG_DIR}."
