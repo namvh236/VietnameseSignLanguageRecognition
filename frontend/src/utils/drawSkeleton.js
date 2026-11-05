@@ -1,16 +1,12 @@
 /**
- * Vẽ khung xương MediaPipe (thân + 2 bàn tay) lên canvas. Không vẽ face mesh: app không dùng
- * tới, mà FACEMESH_TESSELATION có hàng nghìn đoạn nên vẽ mỗi frame rất tốn.
- *
- * Canvas dùng toạ độ gốc của video và cùng object-fit với thẻ <video> nên khung xương khớp
- * chính xác với hình.
+ * Draws MediaPipe skeleton (no face mesh — too many segments per frame); canvas must match the video's size/object-fit to align correctly.
  */
 
 export function drawSkeleton(canvas, results, width, height) {
   const ctx = canvas?.getContext('2d')
   if (!ctx || !width || !height) return
 
-  // Chỉ gán lại size khi đổi — gán canvas.width mỗi frame sẽ cấp phát lại buffer.
+  // Resize only on change — setting canvas.width every frame reallocates its buffer.
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width
     canvas.height = height

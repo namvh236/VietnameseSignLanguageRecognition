@@ -1,34 +1,30 @@
 import { create } from 'zustand'
 import { revokeAudioUrl } from '../utils/audioHelper'
 
-// 3 nguồn nhận dạng ĐỘC LẬP: realtime / upload / record.
-// Kết quả (glosses/câu/audio/lịch sử) của mỗi nguồn tách riêng, không đè lên nhau —
-// người dùng có thể ký realtime rồi bấm sang upload/record để so sánh mà không mất KQ.
+// 3 independent recognition sources: realtime / upload / record. Each keeps its own
+// glosses/sentence/audio/history so switching tabs doesn't overwrite or lose results.
 const emptyResult = () => ({
   glosses: [],       // [{ id, text, timestamp }]
   sentence: '',
-  history: [],       // câu đã dịch (trong phiên)
+  history: [],       // translated sentences (this session)
   audioUrl: null,    // blob URL (WAV)
   isProcessing: false,
-  noSign: false,     // phiên vừa rồi không nhận được ký hiệu nào đủ tin cậy
-  finishedAt: 0,     // mốc backend chốt xong phiên (đổi giá trị = tín hiệu "xong")
+  noSign: false,     // true when the last session got no confident sign
+  finishedAt: 0,     // timestamp the backend finished the session (value change = "done" signal)
 })
 
 const useSignStore = create((set, get) => ({
-  // -- WebSocket (dùng chung) --
   wsStatus: 'disconnected', // 'disconnected' | 'connecting' | 'connected' | 'error'
   setWsStatus: (status) => set({ wsStatus: status }),
 
-  // -- Nguồn đang hiển thị ở ResultPanel --
   activeSource: 'realtime',
   setActiveSource: (source) => set({ activeSource: source }),
 
-  // Nguồn nhận kết quả từ WebSocket: 'realtime' khi ký trước camera, 'upload' khi đang phát
-  // video. Sai nguồn thì kết quả rơi nhầm bucket và panel tương ứng trống trơn.
+  // Source receiving WS results: 'realtime' while signing to camera, 'upload' while playing a
+  // video. Wrong value routes results to the wrong bucket, leaving that panel empty.
   wsSink: 'realtime',
   setWsSink: (source) => set({ wsSink: source }),
 
-  // -- Kết quả theo từng nguồn --
   sources: {
     realtime: emptyResult(),
     upload: emptyResult(),
@@ -43,7 +39,7 @@ const useSignStore = create((set, get) => ({
         [source]: {
           ...cur,
           glosses: [...cur.glosses, { id: Date.now(), text, timestamp: Date.now() }],
-          noSign: false, // có từ mới -> cảnh báo "không nhận được ký hiệu" hết hiệu lực
+          noSign: false, // new gloss arrived -> clear the "no sign recognized" warning
         },
       },
     }
@@ -65,12 +61,12 @@ const useSignStore = create((set, get) => ({
 
   setAudioUrl: (source, url) => set(s => {
     const prev = s.sources[source].audioUrl
-    if (prev) revokeAudioUrl(prev) // tránh rò rỉ bộ nhớ, chỉ thu hồi audio CỦA nguồn này
+    if (prev) revokeAudioUrl(prev) // avoid leaking memory; only revoke this source's audio
     return { sources: { ...s.sources, [source]: { ...s.sources[source], audioUrl: url } } }
   }),
 
-  // Backend đã chốt xong phiên (có câu + giọng nói, hoặc không nhận được ký hiệu nào).
-  // Luôn được gọi -> chỗ nào đang chờ kết quả cũng thoát được, không treo tới hết timeout.
+  // Backend finished the session (sentence + audio, or no confident sign). Always called so
+  // anything awaiting a result can exit instead of hanging until timeout.
   markFinished: (source, { noSign = false } = {}) => set(s => ({
     sources: {
       ...s.sources,
@@ -78,7 +74,7 @@ const useSignStore = create((set, get) => ({
     },
   })),
 
-  // Lượt dịch mới: xoá ký hiệu/câu/giọng nói của lượt trước nhưng giữ lịch sử.
+  // New run: clears the previous glosses/sentence/audio but keeps history.
   startNewRun: (source) => set(s => {
     const cur = s.sources[source]
     if (cur.audioUrl) revokeAudioUrl(cur.audioUrl)
@@ -98,14 +94,13 @@ const useSignStore = create((set, get) => ({
     }
   }),
 
-  // Xóa kết quả của MỘT nguồn (không đụng các nguồn khác).
+  // Clears one source's results without touching the others.
   clearSession: (source) => set(s => {
     const prev = s.sources[source].audioUrl
     if (prev) revokeAudioUrl(prev)
     return { sources: { ...s.sources, [source]: emptyResult() } }
   }),
 
-  // -- Cài đặt & toggle (dùng chung, lưu localStorage) --
   theme: localStorage.getItem('sign_speak_theme') || 'dark', // 'dark' | 'light'
   voiceGender: localStorage.getItem('sign_speak_voice_gender') || 'woman', // 'man' | 'woman'
   voiceSpeed: parseFloat(localStorage.getItem('sign_speak_voice_speed')) || 1.0,
@@ -131,11 +126,9 @@ const useSignStore = create((set, get) => ({
     set({ voiceSpeed: nextSpeed })
   },
 
-  // -- Camera Power --
   isCameraOn: true,
   setCameraOn: (on) => set({ isCameraOn: on }),
 
-  // -- Debug Skeleton --
   showSkeleton: false,
   toggleSkeleton: () => set(s => ({ showSkeleton: !s.showSkeleton })),
 }))

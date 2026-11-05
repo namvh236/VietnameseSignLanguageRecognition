@@ -1,4 +1,4 @@
-"""Tong hop giong noi: cau -> WAV bytes in-memory (khong ghi file ra disk)."""
+"""Text-to-speech: sentence -> WAV bytes in-memory (no disk writes)."""
 
 import asyncio
 import io

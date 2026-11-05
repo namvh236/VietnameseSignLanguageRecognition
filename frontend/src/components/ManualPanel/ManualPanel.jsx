@@ -5,28 +5,20 @@ import { videoCacheKey } from '../../utils/videoHash'
 import UploadPlayer from './UploadPlayer'
 import VideoRecorder from './VideoRecorder'
 
-/**
- * Tab "Nhận dạng thủ công", hai chế độ dùng CÙNG một đường dịch (phát video -> MediaPipe ->
- * keypoint -> WebSocket), chỉ khác nguồn video:
- * - 'upload': tải một tệp lên  -> kết quả vào nguồn 'upload'
- * - 'record': tự quay bằng webcam -> kết quả vào nguồn 'record'
- *
- * Mỗi chế độ chỉ giữ một clip — nạp clip khác là thay luôn, chỉ lịch sử câu đã dịch được giữ
- * lại (xem startNewRun trong store).
- */
+/** Upload/record modes share one pipeline (video -> MediaPipe -> WebSocket), only source differs; each mode keeps one clip, history persists via store's startNewRun. */
 export default function ManualPanel() {
   const [mode, setMode] = useState('upload') // 'upload' | 'record'
-  const [video, setVideo] = useState(null) // clip tải lên: { id, file, name, url }
-  const [recorded, setRecorded] = useState(null) // clip tự quay: thêm { duration }
+  const [video, setVideo] = useState(null) // uploaded clip: { id, file, name, url }
+  const [recorded, setRecorded] = useState(null) // recorded clip: adds { duration }
   const fileInputRef = useRef(null)
   const setActiveSource = useSignStore(s => s.setActiveSource)
 
-  // Chế độ đang mở chính là nguồn kết quả hiển thị ở ResultPanel.
+  // Active mode determines which source ResultPanel displays.
   useEffect(() => {
     setActiveSource(mode)
   }, [mode, setActiveSource])
 
-  // Thu hồi blob URL khi rời tab, tránh rò rỉ bộ nhớ.
+  // Revoke blob URLs on unmount to avoid memory leaks.
   useEffect(() => {
     return () => {
       if (video?.url) URL.revokeObjectURL(video.url)
@@ -39,7 +31,7 @@ export default function ManualPanel() {
     if (!file || !file.type.startsWith('video/')) return
     const id = `upload-${Date.now()}`
     setVideo(prev => {
-      if (prev?.url) URL.revokeObjectURL(prev.url) // chỉ giữ một video tại một thời điểm
+      if (prev?.url) URL.revokeObjectURL(prev.url) // only one video kept at a time
       return {
         id,
         file,
@@ -47,8 +39,8 @@ export default function ManualPanel() {
         url: URL.createObjectURL(file),
       }
     })
-    // Băm nội dung file để tra cache kết quả (video đã xử lý trước thì phát lại ngay).
-    // Chạy sau khi đã hiện video: file lớn mất một nhịp, không nên chặn UI.
+    // Hash file content to look up a cached result (already-processed video replays instantly).
+    // Runs after video is shown since hashing large files shouldn't block the UI.
     try {
       const cacheKey = await videoCacheKey(file)
       setVideo(prev => (prev && prev.id === id ? { ...prev, cacheKey } : prev))
@@ -59,7 +51,7 @@ export default function ManualPanel() {
 
   const handleFileChange = (e) => {
     acceptFile(e.target.files?.[0])
-    e.target.value = '' // chọn lại đúng tệp cũ vẫn kích hoạt onChange
+    e.target.value = '' // reset so re-selecting the same file still fires onChange
   }
 
   const handleDrop = (e) => {
@@ -103,7 +95,6 @@ export default function ManualPanel() {
         className="hidden"
       />
 
-      {/* Chọn nguồn clip: tải lên hoặc tự quay */}
       <div className="shrink-0 flex p-1 rounded-xl bg-slate-200/60 dark:bg-slate-900/60 border border-slate-300 dark:border-slate-800">
         <button onClick={() => setMode('upload')} className={modeBtn(mode === 'upload')}>
           <UploadCloud size={13} />
@@ -118,7 +109,7 @@ export default function ManualPanel() {
       {mode === 'upload' ? (
         video ? (
           <>
-            {/* Thanh tệp gọn — nhường tối đa không gian cho khung hình */}
+            {/* Compact file bar leaves max space for the video frame */}
             <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-900 bg-white/50 dark:bg-slate-950/30">
               <div className="flex items-center gap-2 min-w-0">
                 <FileVideo size={15} className="text-indigo-500 shrink-0" />

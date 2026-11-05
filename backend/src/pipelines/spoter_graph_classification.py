@@ -149,20 +149,12 @@ class Pad:
 
 class Shift:
     def __call__(self, data: torch.Tensor) -> torch.Tensor:
-        """
-        Move the landmark position interval to improve performance
-        """
+        # Shift coords by -0.5 to center the landmark range (aids training).
         return data - 0.5
 
 
 class TensorToDict:
     def __call__(self, data: np.ndarray) -> dict:
-        """
-        Converts the tensor representation of the pose data into a dictionary.
-
-        :param data: np.ndarray containing the pose data
-        :return: Dictionary with the pose data
-        """
         data_array = data.numpy()
         output = {}
         for idx, landmark in enumerate(LANDMARKS):
@@ -172,12 +164,6 @@ class TensorToDict:
 
 class DictToTensor:
     def __call__(self, data: dict) -> np.ndarray:
-        """
-        Converts the dictionary representation of the pose data into a tensor.
-
-        :param data: Dictionary containing the pose data
-        :return: np.ndarray with the pose data
-        """
         output = np.empty((len(data["leftEar"]), len(LANDMARKS), 2))
         for idx, landmark in enumerate(LANDMARKS):
             output[:, idx, 0] = [frame[0] for frame in data[landmark]]
@@ -187,23 +173,15 @@ class DictToTensor:
 
 class SingleBodyDictNormalize:
     def __call__(self, row: dict) -> dict:
-        """
-        Normalizes the skeletal data for a given sequence of frames with signer's body pose data. The normalization follows
-        the definition from our paper.
-
-        :param row: Dictionary containing key-value pairs with joint identifiers and corresponding lists (sequences) of
-                    that particular joints coordinates
-        :return: Dictionary with normalized skeletal data (following the same schema as input data)
-        """
+        """Normalize body landmarks into a head-relative bounding box (SPOTER paper)."""
         sequence_size = len(row["leftEar"])
         valid_sequence = True
         original_row = row
 
         last_starting_point, last_ending_point = None, None
 
-        # Treat each element of the sequence (analyzed frame) individually
         for sequence_index in range(sequence_size):
-            # Prevent from even starting the analysis if some necessary elements are not present
+            # A coordinate of 0 means the landmark wasn't detected.
             if (
                 row["leftShoulder"][sequence_index][0] == 0
                 or row["rightShoulder"][sequence_index][0] == 0
@@ -219,15 +197,9 @@ class SingleBodyDictNormalize:
 
             else:
 
-                # NOTE:
-                #
-                # While in the paper, it is written that the head metric is calculated by halving the shoulder distance,
-                # this is meant for the distance between the very ends of one's shoulder, as literature studying body
-                # metrics and ratios generally states. The Vision Pose Estimation API, however, seems to be predicting
-                # rather the center of one's shoulder. Based on our experiments and manual reviews of the data, employing
-                # this as just the plain shoulder distance seems to be more corresponding to the desired metric.
-                #
-                # Please, review this if using other third-party pose estimation libraries.
+                # NOTE: head_metric uses the full shoulder distance (not halved
+                # as in the paper) because this pose API predicts shoulder centers,
+                # not edges; re-check if switching pose estimation libraries.
 
                 if (
                     row["leftShoulder"][sequence_index][0] != 0
@@ -254,9 +226,6 @@ class SingleBodyDictNormalize:
                     ) ** 0.5
                     head_metric = neck_nose_distance
 
-                # Set the starting and ending point of the normalization bounding box
-                # starting_point = [row["neck"][sequence_index][0] - 3 * head_metric,
-                #                  row["leftEye"][sequence_index][1] + (head_metric / 2)]
                 starting_point = [
                     row["neck"][sequence_index][0] - 3 * head_metric,
                     row["leftEye"][sequence_index][1] + head_metric,
@@ -268,7 +237,6 @@ class SingleBodyDictNormalize:
 
                 last_starting_point, last_ending_point = starting_point, ending_point
 
-            # Ensure that all of the bounding-box-defining coordinates are not out of the picture
             if starting_point[0] < 0:
                 starting_point[0] = 0
             if starting_point[1] < 0:
@@ -278,11 +246,9 @@ class SingleBodyDictNormalize:
             if ending_point[1] < 0:
                 ending_point[1] = 0
 
-            # Normalize individual landmarks and save the results
             for identifier in BODY_LANDMARKS:
                 key = identifier
 
-                # Prevent from trying to normalize incorrectly captured points
                 if row[key][sequence_index][0] == 0:
                     continue
 
@@ -315,36 +281,24 @@ class SingleBodyDictNormalize:
 
 class SPOTERSingleHandDictNormalize:
     def __call__(self, row: dict) -> dict:
-        """
-        Normalizes the skeletal data for a given sequence of frames with signer's hand pose data. The normalization follows
-        the definition from our paper.
-
-        :param row: Dictionary containing key-value pairs with joint identifiers and corresponding lists (sequences) of
-                    that particular joints coordinates
-        :return: Dictionary with normalized skeletal data (following the same schema as input data)
-        """
+        """Normalize hand landmarks into a bounding box with 10% margin (SPOTER paper)."""
 
         hand_landmarks = {0: [], 1: []}
 
-        # Determine how many hands are present in the dataset
         range_hand_size = 1
         if "wrist_1" in row.keys():
             range_hand_size = 2
 
-        # Construct the relevant identifiers
         for identifier in HAND_LANDMARKS:
             for hand_index in range(range_hand_size):
                 hand_landmarks[hand_index].append(identifier + "_" + str(hand_index))
 
-        # Treat each hand individually
         for hand_index in range(range_hand_size):
 
             sequence_size = len(row["wrist_" + str(hand_index)])
 
-            # Treat each element of the sequence (analyzed frame) individually
             for sequence_index in range(sequence_size):
 
-                # Retrieve all of the X and Y values of the current frame
                 landmarks_x_values = [
                     row[key][sequence_index][0]
                     for key in hand_landmarks[hand_index]
@@ -356,11 +310,11 @@ class SPOTERSingleHandDictNormalize:
                     if row[key][sequence_index][1] != 0
                 ]
 
-                # Prevent from even starting the analysis if some necessary elements are not present
                 if not landmarks_x_values or not landmarks_y_values:
                     continue
 
-                # Calculate the deltas
+                # Pad by 10% of the larger side; the smaller axis gets extra padding
+                # so the bounding box is roughly square.
                 width, height = max(landmarks_x_values) - min(landmarks_x_values), max(
                     landmarks_y_values
                 ) - min(landmarks_y_values)
@@ -371,7 +325,6 @@ class SPOTERSingleHandDictNormalize:
                     delta_y = 0.1 * height
                     delta_x = delta_y + ((height - width) / 2)
 
-                # Set the starting and ending point of the normalization bounding box
                 starting_point = (
                     min(landmarks_x_values) - delta_x,
                     min(landmarks_y_values) - delta_y,
@@ -381,11 +334,9 @@ class SPOTERSingleHandDictNormalize:
                     max(landmarks_y_values) + delta_y,
                 )
 
-                # Normalize individual landmarks and save the results
                 for identifier in HAND_LANDMARKS:
                     key = identifier + "_" + str(hand_index)
 
-                    # Prevent from trying to normalize incorrectly captured points
                     if (
                         row[key][sequence_index][0] == 0
                         or (ending_point[0] - starting_point[0]) == 0

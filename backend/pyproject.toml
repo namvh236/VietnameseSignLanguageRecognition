@@ -4,9 +4,8 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
-# Chi con dependency phuc vu SERVING (FastAPI + demo Gradio + 2 model ONNX).
-# Cac goi training/export (wandb, evaluate, thop, timm, pytorchvideo, transformers, onnx,
-# onnxscript, ...) da chuyen sang repo training rieng.
+# Only serving deps remain here (FastAPI + Gradio demo + ONNX models);
+# training/export packages moved to a separate training repo.
 dependencies = [
     "fastapi>=0.111.0",
     "uvicorn[standard]>=0.29.0",
@@ -25,8 +24,8 @@ dependencies = [
     "vieneu>=2.7.0",
 ]
 
-# PyTorch build cho CUDA 12.6 — tương thích driver NVIDIA 535 (CUDA 12.2).
-# Tránh bản cu130 mặc định trên PyPI vì nó đòi driver mới hơn -> fallback CPU.
+# CUDA 12.6 build for compatibility with driver 535 (CUDA 12.2);
+# PyPI's default cu130 build needs a newer driver and falls back to CPU.
 [[tool.uv.index]]
 name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
@@ -36,9 +35,8 @@ explicit = true
 torch = { index = "pytorch-cu126" }
 torchvision = { index = "pytorch-cu126" }
 
-# vieneu khai bao "onnxruntime" (ban CPU) nhung du an dung onnxruntime-gpu; hai goi nay
-# ghi de cung package `onnxruntime` nen KHONG duoc cai ca hai. Marker khong bao gio dung
-# de loai ban CPU khoi resolution.
+# vieneu pulls in CPU onnxruntime, but we need onnxruntime-gpu (same module
+# name, can't install both); this always-false marker excludes the CPU build.
 [tool.uv]
 override-dependencies = ["onnxruntime; sys_platform == 'never'"]
 

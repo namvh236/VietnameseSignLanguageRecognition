@@ -1,10 +1,6 @@
-"""Cache ket qua dich theo file video -- luoi an toan cho demo.
-
-- GET  /api/cache/{key}: video nay da tung xu ly chua? -> tra ve tu + cau + WAV.
-- POST /api/cache/{key}: luu ket qua vua chay xong de lan sau phat lai ngay.
-
-`key` = sha256 noi dung file (client tinh). Cung mot file = cung key, ke ca doi ten.
-"""
+"""Per-video-file result cache -- safety net for live demos. GET /api/cache/{key}:
+has this video been processed? -> words + sentence + WAV. POST saves a just-finished
+result (key = sha256 of the file's content) for instant replay next time."""
 
 import base64
 

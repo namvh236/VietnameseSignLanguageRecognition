@@ -1,18 +1,4 @@
-"""
-backend/demo_gradio.py
-
-Demo Gradio trọn gói — KHÔNG cần frontend/serving/WebSocket:
-    video ký hiệu -> nhận dạng gloss (FUSION SPOTER + SL-GCN, ONNX) -> ghép câu (Qwen3/Ollama) -> giọng nói (VieNeu-TTS)
-
-Nhận dạng là LATE-FUSION 2 model ONNX (xem docs/local_fusion_deployment.md): trích Pose
-MediaPipe Holistic 1 lần, rẽ 2 nhánh tiền xử lý (SPOTER 70 frame / SL-GCN 150 frame),
-hợp nhất ở tầng xác suất P_fused = 0.75*P_slgcn + 0.25*P_spoter rồi argmax.
-LLM và TTS nạp LƯỜI (chỉ khi dùng) và bắt lỗi an toàn để demo không sập khi thiếu Ollama.
-
-Chạy (từ thư mục backend/):
-    uv run python demo_gradio.py
-Rồi mở http://localhost:7860
-"""
+"""Gradio demo: sign video -> gloss (fusion) -> sentence (LLM) -> speech (TTS)."""
 
 import os
 import re
@@ -47,31 +33,28 @@ from pipelines.spoter_graph_classification import (
 )
 from utils import SLGCN_JOINTS, COCO_TO_POSE_FORMAT
 
-# --- Cấu hình ---
-# Late-fusion 2 mô hình (xem docs/local_fusion_deployment.md):
-#   P_fused = W_SLGCN * P_slgcn + (1 - W_SLGCN) * P_spoter  ->  argmax -> gloss
-# Cả hai ONNX đều XUẤT SẴN "probabilities" (đã softmax trong graph) -> KHÔNG softmax lại.
+# Late fusion: P_fused = W_SLGCN * P_slgcn + (1 - W_SLGCN) * P_spoter -> argmax.
+# Both ONNX graphs already output softmaxed probabilities; do not softmax again.
 SPOTER_ONNX_PATH = ROOT / "models" / "spoter" / "spoter_v3.onnx"
 SLGCN_ONNX_PATH = ROOT / "models" / "sl-gcn" / "sl_gcn_ensemble.onnx"
 GLOSS_CSV = ROOT / "experiments" / "gloss.csv"
-# Trọng số đã chốt trên validation/test: SL-GCN 0.75, SPOTER 0.25 (fusion 90.1% > mỗi model đơn).
+# Weights tuned on val/test: SL-GCN 0.75 / SPOTER 0.25 (fusion 90.1%, beats solo).
 W_SLGCN = float(os.getenv("FUSION_W_SLGCN", "0.75"))
-SPOTER_NUM_FRAMES = 70    # cửa sổ của SPOTER
-SLGCN_NUM_FRAMES = 150    # cửa sổ của SL-GCN
-SLGCN_NUM_POINTS = 27     # số joint của SL-GCN
+SPOTER_NUM_FRAMES = 70
+SLGCN_NUM_FRAMES = 150
+SLGCN_NUM_POINTS = 27
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
-# Ngưỡng xác suất top-1 để TỰ ĐỘNG chấp nhận một từ (realtime / video nhiều từ).
-# Model 400 lớp luôn trả về MỘT lớp kể cả với đoạn rác, nên phải lọc theo confidence.
+# Top-1 confidence threshold to auto-accept a word (realtime / multi-sign video).
+# The 400-class model always returns a class even for garbage; filter by confidence.
 MIN_CONFIDENCE = float(os.getenv("SIGN_MIN_CONF", "0.5"))
 
 
-# --- Tiền xử lý nhánh SL-GCN ---
-# Copy nguyên hai class từ src/features/transforms/sl_gcn.py (dòng 30–73), CỐ TÌNH bỏ
-# import `_build_edges` — bone/motion/normalize đã bake vào đồ thị ONNX nên local không cần.
+# Copied from src/features/transforms/sl_gcn.py, intentionally dropping the
+# `_build_edges` import: bone/motion/normalize are already baked into the ONNX graph.
 
 class SLGCNJointSelect:
-    """Chọn 27 joint cho SL-GCN, mỗi joint gồm (x, y, confidence)."""
+    """Select SL-GCN joints, each as (x, y, confidence)."""
 
     def __init__(self, num_points: int = SLGCN_NUM_POINTS) -> None:
         self.joints = SLGCN_JOINTS[num_points]
@@ -95,7 +78,7 @@ class SLGCNJointSelect:
 
 
 class SLGCNPad:
-    """Pad/cắt về đúng num_frames rồi đổi trục -> (C, T, V, M) cho ONNX SL-GCN."""
+    """Pad/crop to num_frames and transpose to (C, T, V, M) for SL-GCN ONNX."""
 
     def __init__(self, num_frames: int = SLGCN_NUM_FRAMES) -> None:
         self.num_frames = num_frames
@@ -130,22 +113,21 @@ def read_labels(path: Path) -> dict[int, str]:
 
 print("Đang nạp 2 model nhận dạng (SPOTER + SL-GCN) + nhãn...")
 ID2LABEL = read_labels(GLOSS_CSV)
-# Giúp onnxruntime-gpu tìm thấy CUDA/cuDNN cài qua pip (các gói nvidia-*-cu12 trong venv).
+# Helps onnxruntime-gpu find pip-installed CUDA/cuDNN (nvidia-*-cu12 packages).
 if hasattr(ort, "preload_dlls"):
     try:
         ort.preload_dlls()
     except Exception:  # noqa: BLE001
         pass
-# Ưu tiên GPU (CUDA) cho ONNX, tự động lùi về CPU nếu không có.
+# Prefer CUDA for ONNX, falling back to CPU if unavailable.
 _available = ort.get_available_providers()
 _providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in _available]
 SPOTER_SESSION = ort.InferenceSession(str(SPOTER_ONNX_PATH), providers=_providers)
 SLGCN_SESSION = ort.InferenceSession(str(SLGCN_ONNX_PATH), providers=_providers)
 print(f"ONNX providers — SPOTER: {SPOTER_SESSION.get_providers()} | SL-GCN: {SLGCN_SESSION.get_providers()}")
 
-# Trích Pose (MediaPipe Holistic) MỘT lần / segment, dùng chung cho cả hai nhánh.
 POSE_EXTRACT = PoseExtract()
-# Nhánh SPOTER: nhận Pose -> tensor (70, 54, 2). PoseExtract đã tách riêng ở trên.
+# SPOTER branch: Pose -> tensor (70, 54, 2).
 SPOTER_TRANSFORMS = Compose(
     [
         JointSelect(),
@@ -157,7 +139,7 @@ SPOTER_TRANSFORMS = Compose(
         Pad(SPOTER_NUM_FRAMES),
     ]
 )
-# Nhánh SL-GCN: nhận Pose -> mảng (3, 150, 27, 1).
+# SL-GCN branch: Pose -> array (3, 150, 27, 1).
 SLGCN_TRANSFORMS = Compose(
     [
         SLGCNJointSelect(SLGCN_NUM_POINTS),
@@ -166,7 +148,7 @@ SLGCN_TRANSFORMS = Compose(
 )
 print(f"Sẵn sàng — {len(ID2LABEL)} lớp gloss | fusion W_SLGCN={W_SLGCN:.2f}.")
 
-# LLM / TTS nạp lười (tốn tài nguyên) — chỉ khởi tạo khi dùng lần đầu.
+# LLM/TTS are lazy-loaded (heavy); created on first use only.
 _llm_client = None
 _tts_engine = None
 
@@ -190,8 +172,6 @@ def _get_tts():
     return _tts_engine
 
 
-# --- Nhận dạng ---
-
 def read_frames(path: str):
     cap = cv2.VideoCapture(path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -209,28 +189,21 @@ def read_frames(path: str):
 
 
 def classify_frames(frames, fps, w, h):
-    """Danh sách frame RGB -> (dict top-5 {gloss: prob}, gloss top-1).
-
-    LATE-FUSION SPOTER + SL-GCN: trích Pose 1 lần rồi rẽ 2 nhánh tiền xử lý riêng,
-    chạy 2 session ONNX, hợp nhất Ở TẦNG XÁC SUẤT:
-        P_fused = W_SLGCN * P_slgcn + (1 - W_SLGCN) * P_spoter
-    Cả hai ONNX đã xuất sẵn "probabilities" (softmax trong graph) -> KHÔNG softmax lại.
-    Dùng chung cho cả mode video và mode realtime.
+    """Frames -> (top-5 {gloss: prob}, top-1 gloss) via SPOTER+SL-GCN fusion.
+    Both ONNX graphs output pre-softmaxed probabilities; don't softmax again.
     """
-    # PoseExtract dùng chung (MediaPipe Holistic) — chạy MỘT lần cho cả 2 nhánh.
     pose = POSE_EXTRACT({"frames": frames, "fps": fps, "width": w, "height": h})
 
-    # Nhánh SPOTER trước (chỉ đọc pixel thô, không mutate Pose).
+    # SPOTER first: it only reads pose data, doesn't mutate it.
     spoter_tensor = SPOTER_TRANSFORMS(pose)
     spoter_in = spoter_tensor.unsqueeze(0).cpu().numpy().astype(np.float32)  # (1, 70, 54, 2)
     p_spoter = SPOTER_SESSION.run(["probabilities"], {"poses": spoter_in})[0][0]
 
-    # Nhánh SL-GCN (SLGCNJointSelect gọi normalize_distribution -> mutate Pose, nên chạy SAU).
+    # SL-GCN second: SLGCNJointSelect calls normalize_distribution, mutating Pose.
     slgcn_arr = SLGCN_TRANSFORMS(pose)                                       # (3, 150, 27, 1)
     slgcn_in = slgcn_arr[None].astype(np.float32)                           # (1, 3, 150, 27, 1)
     p_slgcn = SLGCN_SESSION.run(["probabilities"], {"poses": slgcn_in})[0][0]
 
-    # Fusion: chỉ còn phép cộng có trọng số (không softmax lại).
     probs = W_SLGCN * p_slgcn + (1.0 - W_SLGCN) * p_spoter
     top5 = np.argsort(probs)[::-1][:5]
     scores = {ID2LABEL[int(i)]: float(probs[i]) for i in top5}
@@ -239,8 +212,8 @@ def classify_frames(frames, fps, w, h):
 
 
 def recognize(video_path, signs, multi):
-    """Video -> gloss. Nếu `multi`, tự tách video thành nhiều ký hiệu (theo tay lên/xuống)
-    và nối tất cả; nếu không, coi cả video là MỘT ký hiệu (như trước)."""
+    """Video -> gloss(es). If `multi`, auto-split by hand up/down into several signs;
+    otherwise treat the whole video as one sign."""
     if not video_path:
         raise gr.Error("Hãy quay hoặc tải lên một video ký hiệu.")
     frames, fps, w, h = read_frames(video_path)
@@ -257,7 +230,7 @@ def recognize(video_path, signs, multi):
         skipped = 0
         for seg_frames in segments:
             scores, top_gloss = classify_frames(seg_frames, fps, w, h)
-            # Đoạn tự cắt có thể là rác (chuyển tiếp, tư thế nghỉ) -> chỉ nhận khi đủ tự tin.
+            # Auto-cut segments may be junk; only accept if confident enough.
             if scores.get(top_gloss, 0.0) < MIN_CONFIDENCE:
                 skipped += 1
                 continue
@@ -270,8 +243,6 @@ def recognize(video_path, signs, multi):
     new_signs = signs + [top_gloss]
     return scores, new_signs, "  •  ".join(new_signs)
 
-
-# --- LLM + TTS ---
 
 _CONTROL_TOKEN_RE = re.compile(r"\s*/(?:no_)?think\b")
 _LABEL_ONLY_LINE_RE = re.compile(
@@ -287,10 +258,8 @@ _LABEL_PREFIX_RE = re.compile(
 
 
 def _strip_think(text: str) -> str:
-    """Lam sach output LLM: bo khoi/tag suy nghi, token dieu khien va dong nhan thua.
-
-    Qwen3 doi khi lam lo /no_think, /think va chen dong nhan (vd 'Bản dịch') vao output.
-    """
+    """Strip <think> blocks, control tokens, and label lines Qwen3 sometimes leaks
+    into its output (e.g. /no_think, or a label prefix like 'Bản dịch:')."""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     text = re.sub(r"</?think>", "", text)
     text = _CONTROL_TOKEN_RE.sub("", text)
@@ -306,7 +275,7 @@ def _strip_think(text: str) -> str:
 
 
 def _dedupe_consecutive(signs: list[str]) -> list[str]:
-    """Bỏ các từ trùng liền kề (cùng một ký hiệu bị nhận dạng nhiều lần)."""
+    """Drop consecutive duplicate signs (same gesture recognized multiple times)."""
     return [g for i, g in enumerate(signs) if i == 0 or g != signs[i - 1]]
 
 
@@ -337,31 +306,31 @@ def generate_sentence(signs: list[str]) -> str:
             {"role": "user", "content": f"Các từ nhận dạng được: {', '.join(signs)} /no_think"},
         ],
         temperature=0.3,
-        max_tokens=128,  # cau ghep ngan; gioi han token de infer nhanh hon
+        max_tokens=128,  # short sentences; cap tokens for faster inference
     )
     return _strip_think(response.choices[0].message.content)
 
 
 def make_sentence_and_speak(signs):
-    """Danh sách từ -> câu tự nhiên (LLM) -> giọng nói (TTS)."""
+    """Signs -> natural sentence (LLM) -> speech (TTS)."""
     if not signs:
         raise gr.Error("Chưa có từ nào. Hãy nhận dạng ít nhất một ký hiệu trước.")
 
-    # Cùng một ký hiệu bị nhận dạng lặp lại chỉ tính một lần khi ghép câu.
+    # Collapse repeated detections before building the sentence.
     signs = _dedupe_consecutive(signs)
 
-    # 1) Sinh câu (nếu Ollama lỗi -> ghép từ thô).
+    # 1) Generate sentence (fall back to raw words if Ollama fails).
     try:
         sentence = generate_sentence(signs)
     except Exception as exc:  # noqa: BLE001
         sentence = " ".join(signs)
         gr.Warning(f"LLM lỗi (kiểm tra Ollama đã chạy + pull {OLLAMA_MODEL}?): {exc}. Tạm ghép từ thô.")
 
-    # Nếu LLM trả về rỗng (ví dụ toàn bộ nằm trong <think>), quay về ghép từ thô.
+    # Empty LLM output (e.g. all inside <think>) falls back to raw words.
     if not sentence or not sentence.strip():
         sentence = " ".join(signs)
 
-    # 2) Sinh giọng nói.
+    # 2) Generate speech.
     try:
         engine = _get_tts()
         audio = np.asarray(engine.infer(sentence), dtype=np.float32).reshape(-1)
@@ -378,13 +347,12 @@ def clear_all():
     return [], "", "", None, None
 
 
-# --- Realtime: tự động cắt ký hiệu theo cử động tay (dựa trên TBL) ---
-
 _mp_pose = mp.solutions.pose
 
 
 def _arm_angle(shoulder, elbow, wrist):
-    """Góc khuỷu tay (vai-khuỷu-cổ tay), độ. Tay buông thẳng ~180, giơ/gập lại nhỏ hơn."""
+    """Elbow angle (shoulder-elbow-wrist) in degrees; ~180 when straight, less when
+    raised/bent."""
     radians = np.arctan2(wrist[1] - elbow[1], wrist[0] - elbow[0]) - np.arctan2(
         shoulder[1] - elbow[1], shoulder[0] - elbow[0]
     )
@@ -393,12 +361,9 @@ def _arm_angle(shoulder, elbow, wrist):
 
 
 def _hands_up_from_pose(pose, frame_rgb, angle_threshold, visibility_threshold):
-    """(tay đang giơ?, toạ độ cổ tay nhìn thấy được [chuẩn hoá 0..1]).
-
-    "Đang giơ" = có ít nhất một tay góc khuỷu < ngưỡng + cổ tay đủ hiển thị.
-    Danh sách cổ tay dùng để đo BIÊN ĐỘ CỬ ĐỘNG của cả đoạn — tay để yên (đặt lên
-    bàn, buông hờ...) dù qua được ngưỡng góc vẫn không phải là đang ký hiệu.
-    """
+    """(hand raised?, visible wrist coords [0..1]). Raised = elbow angle below
+    threshold with wrist visible; wrists also gauge motion so a resting hand
+    isn't mistaken for a sign."""
     res = pose.process(frame_rgb)
     if not res.pose_landmarks:
         return False, []
@@ -419,7 +384,7 @@ def _hands_up_from_pose(pose, frame_rgb, angle_threshold, visibility_threshold):
 
 
 def _track_motion(track):
-    """Biên độ di chuyển lớn nhất (toạ độ chuẩn hoá) của chuỗi vị trí cổ tay."""
+    """Max movement range (normalized coords) across a wrist-position track."""
     pts = np.array([p for p in track if p is not None], dtype=np.float32)
     if len(pts) < 2:
         return 0.0
@@ -437,12 +402,8 @@ def segment_video(
     preroll_frames=5,
     min_wrist_motion=0.04,
 ):
-    """Tách video NHIỀU ký hiệu thành danh sách các đoạn frame (mỗi đoạn ~1 ký hiệu).
-
-    Chạy offline cùng logic tay lên/xuống với mode realtime (dùng MediaPipe Pose từng frame).
-    Đoạn mà cổ tay gần như đứng yên (< min_wrist_motion, toạ độ chuẩn hoá) bị loại —
-    đó là tư thế nghỉ lọt qua ngưỡng góc, không phải ký hiệu.
-    """
+    """Split a multi-sign video into per-sign segments; mirrors the realtime hand
+    up/down logic. Near-still wrist segments are dropped as idle, not signs."""
     pose = _mp_pose.Pose(
         min_detection_confidence=0.5, min_tracking_confidence=0.5, smooth_landmarks=True
     )
@@ -471,7 +432,7 @@ def segment_video(
                         segments.append(buf)
                     active, up, down, buf, track = False, 0, 0, [], []
                     preroll.clear()
-        # Đoạn còn dở ở cuối video (chưa kịp hạ tay).
+        # Trailing in-progress segment at end of video (hand never went down).
         if active and len(buf) >= min_sign_frames and _track_motion(track) >= min_wrist_motion:
             segments.append(buf)
     finally:
@@ -480,12 +441,9 @@ def segment_video(
 
 
 class RealtimeSegmenter:
-    """Máy trạng thái từng-frame: phát hiện lúc bắt đầu/kết thúc một ký hiệu.
-
-    Tái dùng ý tưởng của Temporal Boundary Localization (góc cánh tay + độ hiển thị cổ tay):
-    tay giơ lên (góc khuỷu < ngưỡng) = đang ký; tay hạ xuống = kết thúc. Có khử rung
-    (min_up/min_down frame) và tiền-đệm (pre-roll) để không cắt cụt đầu ký hiệu.
-    """
+    """Per-frame state machine detecting sign start/end (Temporal Boundary
+    Localization: elbow angle + wrist visibility), debounced via min_up/min_down
+    frames, with pre-roll so the sign start isn't cut off."""
 
     def __init__(
         self,
@@ -512,15 +470,15 @@ class RealtimeSegmenter:
         self.reset_state()
 
     def reset_state(self):
-        self.active = False           # đang trong một ký hiệu?
-        self.up_count = 0             # số frame liên tiếp "tay lên"
-        self.down_count = 0           # số frame liên tiếp "tay xuống"
-        self.buffer = []              # frame của ký hiệu hiện tại
-        self.wrist_track = []         # vị trí cổ tay từng frame (đo biên độ cử động)
-        self.buf_t0 = None            # mốc thời gian frame đầu (để ước lượng fps)
+        self.active = False  # inside a sign?
+        self.up_count = 0  # consecutive "hand up" frames
+        self.down_count = 0  # consecutive "hand down" frames
+        self.buffer = []  # frames of the current sign
+        self.wrist_track = []  # per-frame wrist pos (for motion amplitude)
+        self.buf_t0 = None  # first-frame timestamp (to estimate fps)
         self.buf_t1 = None
-        self.last_sign_time = None    # thời điểm ký hiệu gần nhất được nhận dạng
-        self.spoken_upto = 0          # số từ đã tự động đọc (để không đọc lặp)
+        self.last_sign_time = None  # timestamp of the last recognized sign
+        self.spoken_upto = 0  # words already auto-spoken (avoid repeats)
 
     def close(self):
         try:
@@ -534,7 +492,7 @@ class RealtimeSegmenter:
         )
 
     def push(self, frame_rgb):
-        """Nạp một frame. Trả về (frames, fps) khi vừa kết thúc một ký hiệu, ngược lại None."""
+        """Push a frame; returns (frames, fps) when a sign just ended, else None."""
         now = time.time()
         up, wrists = self._hands_up(frame_rgb)
         wrist = tuple(np.mean(wrists, axis=0)) if wrists else None
@@ -544,7 +502,7 @@ class RealtimeSegmenter:
             if up:
                 self.up_count += 1
                 if self.up_count >= self.min_up_frames:
-                    # Bắt đầu ký hiệu: mở đệm bằng pre-roll để giữ trọn phần đầu.
+                    # Start of sign: seed the buffer with pre-roll to keep the start.
                     self.active = True
                     self.buffer = list(self.preroll)
                     self.wrist_track = [wrist]
@@ -555,7 +513,6 @@ class RealtimeSegmenter:
                 self.up_count = 0
             return None
 
-        # Đang trong một ký hiệu.
         self.buffer.append(frame_rgb)
         self.wrist_track.append(wrist)
         self.buf_t1 = now
@@ -573,7 +530,7 @@ class RealtimeSegmenter:
         dur = max(self.buf_t1 - self.buf_t0, 1e-3)
         fps = float(len(frames)) / dur if len(frames) > 1 else 25.0
         fps = float(np.clip(fps, 5.0, 60.0))
-        # Reset về trạng thái nghỉ, sẵn sàng cho ký hiệu tiếp theo.
+        # Reset to idle, ready for the next sign.
         self.active = False
         self.up_count = 0
         self.down_count = 0
@@ -581,21 +538,21 @@ class RealtimeSegmenter:
         self.wrist_track = []
         self.preroll.clear()
         if len(frames) < self.min_sign_frames:
-            return None  # đoạn quá ngắn -> nhiều khả năng là nhiễu
+            return None  # too short, likely noise
         if motion < self.min_wrist_motion:
-            return None  # tay gần như đứng yên -> tư thế nghỉ, không phải ký hiệu
+            return None  # wrists barely moved: resting pose, not a sign
         return frames, fps
 
 
 def realtime_reset():
-    """Xoá trạng thái mode realtime (kể cả bộ phân đoạn)."""
+    """Clear realtime mode state (including the segmenter)."""
     return [], "🟢 Sẵn sàng — hãy bắt đầu ký hiệu.", "", "", None, None
 
 
 def realtime_step(frame, signs, segmenter, angle_thr, min_down, idle_secs):
-    """Handler streaming: nạp 1 frame webcam, tự cắt & phân loại khi ký hiệu kết thúc;
-    khi nghỉ tay đủ lâu (idle_secs) và có từ mới -> tự ghép câu (LLM) + đọc (TTS)."""
-    # Khởi tạo lười segmenter theo từng phiên (giữ trong gr.State).
+    """Streaming handler: classify a sign when it ends; after idle_secs with new
+    words, auto-build a sentence (LLM) and speak it (TTS)."""
+    # Lazily create the segmenter, kept per session in gr.State.
     if segmenter is None:
         segmenter = RealtimeSegmenter()
     segmenter.angle_threshold = float(angle_thr)
@@ -618,14 +575,13 @@ def realtime_step(frame, signs, segmenter, angle_thr, min_down, idle_secs):
                     segmenter.last_sign_time = now
                     new_sign = True
                 else:
-                    # Đoạn rác (nghỉ tay, chuyển tiếp) -> bỏ qua thay vì thêm từ sai.
+                    # Low-confidence segment: skip instead of adding a wrong word.
                     low_conf = (top_gloss, conf)
             except Exception as exc:  # noqa: BLE001
                 gr.Warning(f"Lỗi phân loại đoạn vừa cắt: {exc}")
 
     signs_text = "  •  ".join(signs)
 
-    # Trạng thái hiển thị.
     if segmenter.active:
         status = "✍️ Đang ký..."
     elif new_sign:
@@ -637,7 +593,7 @@ def realtime_step(frame, signs, segmenter, angle_thr, min_down, idle_secs):
     else:
         status = "🟢 Sẵn sàng — hãy bắt đầu ký hiệu."
 
-    # Tự động ghép câu + đọc khi nghỉ tay đủ lâu và còn từ chưa đọc.
+    # Auto-build + speak the sentence once idle long enough with unspoken words.
     pending = len(signs) > segmenter.spoken_upto
     idle_ok = (
         not segmenter.active
@@ -645,27 +601,24 @@ def realtime_step(frame, signs, segmenter, angle_thr, min_down, idle_secs):
         and (now - segmenter.last_sign_time) >= float(idle_secs)
     )
     if pending and idle_ok:
-        segmenter.spoken_upto = len(signs)  # đánh dấu trước để không kích hoạt lại
+        segmenter.spoken_upto = len(signs)  # mark before speaking to avoid a retrigger
         sentence, audio = make_sentence_and_speak(signs)
         status = f"🗣️ Tự đọc câu: {sentence}"
         return signs, status, signs_text, segmenter, sentence, audio
 
-    # Không có gì mới để đọc -> giữ nguyên ô câu/âm thanh (không phát lại).
+    # Nothing new to speak; leave the sentence/audio outputs unchanged.
     return signs, status, signs_text, segmenter, gr.skip(), gr.skip()
 
 
 def perword_step(frame, signs, segmenter, angle_thr, min_down):
-    """Handler cho tab 'Từng từ': như realtime nhưng KHÔNG tự đọc (idle vô hiệu hoá).
-
-    Người dùng ký một từ -> hạ tay -> chốt từ đó -> lặp lại; ghép câu bằng nút bấm.
-    """
+    """Per-word tab handler: like realtime but never auto-speaks (idle disabled);
+    sign one word, lower the hand to commit it, then repeat."""
     signs, status, signs_text, segmenter, _s, _a = realtime_step(
         frame, signs, segmenter, angle_thr, min_down, idle_secs=float("inf")
     )
     return signs, status, signs_text, segmenter
 
 
-# --- Giao diện ---
 _examples = [
     str(ROOT / "test" / name)
     for name in ("cam-on.mp4", "anh.mp4", "em.mp4")
@@ -682,7 +635,6 @@ with gr.Blocks(title="SignSpeak — Demo dịch ngôn ngữ ký hiệu", theme=g
     )
 
     with gr.Tabs():
-        # ===== TAB 1: Video từng ký hiệu (cách cũ) =====
         with gr.Tab("🎬 Video từng ký hiệu"):
             signs_state = gr.State([])
             with gr.Row():
@@ -726,7 +678,6 @@ with gr.Blocks(title="SignSpeak — Demo dịch ngôn ngữ ký hiệu", theme=g
                 outputs=[signs_state, signs_box, sentence_out, audio_out, gloss_out],
             )
 
-        # ===== TAB 2: Realtime (webcam liên tục, tự động cắt ký hiệu) =====
         with gr.Tab("⚡ Realtime"):
             gr.Markdown(
                 "Bật webcam rồi **ký hiệu liên tục**: giơ tay lên để bắt đầu, hạ tay xuống "
@@ -783,7 +734,6 @@ with gr.Blocks(title="SignSpeak — Demo dịch ngôn ngữ ký hiệu", theme=g
                 outputs=[rt_signs_state, rt_status, rt_signs_box, rt_sentence_out, rt_audio_out, rt_seg_state],
             )
 
-        # ===== TAB 3: Từng từ (webcam, chủ động hạ tay sau mỗi từ) =====
         with gr.Tab("✋ Từng từ (hạ tay)"):
             gr.Markdown(
                 "Bật webcam. Với **mỗi từ**: giơ tay lên ký → **hạ tay xuống** để chốt từ đó "

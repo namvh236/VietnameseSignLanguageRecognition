@@ -1,4 +1,4 @@
-"""Warmup luc khoi dong: nap SPOTER + TTS, va nong may Ollama."""
+"""Startup warmup: load SPOTER + TTS, and warm up Ollama."""
 
 import asyncio
 
@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 
 async def ensure_tts_loaded() -> None:
-    """Nap TTS mot lan (idempotent). Dung o warmup va o handler khi can."""
+    """Loads TTS once (idempotent); used at warmup and by handlers on demand."""
     tts = get_tts()
     if not tts.is_loaded:
         loop = asyncio.get_running_loop()
@@ -29,29 +29,29 @@ async def ensure_tts_loaded() -> None:
 async def warmup_all() -> None:
     loop = asyncio.get_running_loop()
 
-    # Nap dong bo (load() la CPU/GPU-bound) trong executor de khong block event loop.
+    # load() is CPU/GPU-bound; run in an executor so it doesn't block the event loop.
     await loop.run_in_executor(None, get_gloss_decoder().load)
     await loop.run_in_executor(None, get_spoter().load)
-    # SL-GCN (nhanh 2 cua fusion) — chi luong video dung, nhung nap som cho warm.
+    # SL-GCN (2nd fusion branch): video flow only, but loaded early to warm it up.
     try:
         await loop.run_in_executor(None, get_slgcn().load)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Nap SL-GCN that bai: %s", exc)
 
-    # VideoRecognizer dung LAI phien ONNX cua SpoterService + SlgcnService -> nap SAU ca hai.
+    # VideoRecognizer reuses SpoterService/SlgcnService's sessions -> load after both.
     try:
         await loop.run_in_executor(None, get_video_recognizer().load)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Nap VideoRecognizer that bai: %s", exc)
 
-    # Chay thu SPOTER voi input gia de nap graph/CUDA context.
+    # Run SPOTER on dummy input to warm up the graph/CUDA context.
     dummy = np.zeros((settings.spoter_seq_len, 54, 2), dtype=np.float32)
     try:
         await get_spoter().infer(dummy)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Warmup SPOTER that bai: %s", exc)
 
-    # Chay thu SL-GCN voi input gia (1, 3, slgcn_seq_len, num_points, 1).
+    # Run SL-GCN on dummy input (1, 3, slgcn_seq_len, num_points, 1).
     slgcn = get_slgcn()
     if slgcn.session is not None:
         slgcn_dummy = np.zeros(
@@ -68,7 +68,7 @@ async def warmup_all() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Ollama chua san sang (%r). Cau se ghep tu tho khi thieu LLM.", exc)
 
-    # TTS nap model nang tu HuggingFace lan dau; guard de khong lam sap startup.
+    # TTS loads a large HuggingFace model on first use; guard against startup crashes.
     try:
         await ensure_tts_loaded()
     except Exception as exc:  # noqa: BLE001

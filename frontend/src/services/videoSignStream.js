@@ -1,25 +1,10 @@
-/**
- * Phát một file video qua đường realtime: MediaPipe Holistic (trình duyệt) -> keypoint ->
- * WebSocket -> backend cắt ký hiệu & dịch.
- *
- * Hai vòng chạy độc lập:
- * - `pump`: MediaPipe theo nhịp riêng, xong frame nào làm ngay frame kế tiếp.
- * - `tick`: gửi keypoint đúng nhịp fps của video, lặp lại keypoint gần nhất cho frame
- *   MediaPipe chưa kịp tính (hold-last). Backend đếm ngưỡng cắt ký hiệu theo SỐ FRAME nên
- *   số frame gửi lên phải khớp.
- *
- * Phải hâm nóng MediaPipe trước khi phát: model (~10MB từ CDN) chỉ tải ở lần send() đầu tiên,
- * phát ngay thì cả clip trôi qua trước khi có keypoint nào.
- */
+/** Streams a video file through the realtime pipeline: MediaPipe -> keypoints -> WebSocket. Two independent loops — `pump` runs MediaPipe at its own pace, `tick` emits keypoints at the video's fps, holding the last frame when MediaPipe lags (backend cuts signs by frame count, so counts must match). Must warm up MediaPipe before playing: the ~10MB CDN model only loads on the first send(). */
 
 import { extractKeypoints, extractSlgcnKeypoints } from '../utils/keypoints'
 import { disposeHolistic, getHolistic, setResultsHandler } from './holistic'
 import wsClient from './ws'
 
-/**
- * MediaPipe ném ĐỒNG BỘ khi không tạo được ngữ cảnh WebGL, nên `send().catch()` không bắt
- * được — ngoại lệ thoát ra và giết cả vòng lặp. Bọc lại để mọi lỗi đi chung một đường.
- */
+/** MediaPipe throws synchronously when it can't create a WebGL context, so send().catch() won't catch it and the exception kills the loop; wrap it so every error goes through one path. */
 function safeSend(holistic, video) {
   try {
     const p = holistic.send({ image: video })
@@ -33,7 +18,7 @@ const WEBGL_HINT =
   'MediaPipe không dùng được WebGL/GPU của trình duyệt. Thường do quá nhiều tab đang chiếm ' +
   'ngữ cảnh WebGL hoặc tiến trình GPU vừa khởi động lại — đóng bớt tab rồi tải lại trang.'
 
-/** Thiếu WebGL thì MediaPipe chết bên trong với đủ kiểu lỗi khó hiểu — gom về một thông báo. */
+/** MediaPipe fails internally with cryptic errors when WebGL is unavailable — map them to one clear message. */
 function describeMediaPipeError(err) {
   const msg = String(err?.message || err || '')
   if (/webgl|gl context|graphics|changeOptions|Cannot read properties|wasm|abort/i.test(msg)) {
@@ -44,11 +29,11 @@ function describeMediaPipeError(err) {
 
 const DEFAULT_FPS = 25
 const EMIT_INTERVAL_MS = 33
-const FLOOR_SAMPLE_FPS = 6.5 // dưới mức này ký hiệu bị nuốt im lặng -> cảnh báo
+const FLOOR_SAMPLE_FPS = 6.5 // below this, signs get silently dropped -> warn
 const WARMUP_TIMEOUT_MS = 60000
 const WARMUP_RETRY_MS = 250
-const WARMUP_RESULTS = 3 // vài frame đầu của MediaPipe luôn chậm; chờ nó ổn định rồi mới phát
-const UI_UPDATE_MS = 400 // hạ nhịp render React để không tranh luồng chính với MediaPipe
+const WARMUP_RESULTS = 3 // the first few MediaPipe frames are always slow; wait for it to stabilize
+const UI_UPDATE_MS = 400 // throttle React renders so they don't compete with MediaPipe on the main thread
 const PUMP_WATCHDOG_MS = 3000
 const STATS_WINDOW_MS = 1000
 
@@ -67,16 +52,7 @@ export function onceEvent(el, event, timeoutMs = 5000) {
   })
 }
 
-/**
- * @param {HTMLVideoElement} video
- * @param {object} opts
- *   onResults(results)      - mỗi khi MediaPipe trả kết quả (vẽ khung xương)
- *   onProgress(cur, total)  - tiến độ (giây), đã hạ nhịp
- *   onPhase(phase)          - 'warmup' | 'playing'
- *   onStats({fps, degraded})
- *   isCancelled()
- * @returns {Promise<'completed'|'cancelled'>}
- */
+/** Streams `video` to the backend over WS, calling onResults/onProgress/onPhase/onStats as it runs; resolves to 'completed' or 'cancelled'. */
 export async function streamVideoThroughWs(
   video,
   { onResults, onProgress, onPhase, onStats, isCancelled } = {}
@@ -90,8 +66,8 @@ export async function streamVideoThroughWs(
     throw new Error(describeMediaPipeError(err))
   }
 
-  let latest = null // keypoint mới nhất: [spoter108, slgcn81]
-  let firstResult = null // resolve của lần hâm nóng
+  let latest = null // latest keypoint pair: [spoter108, slgcn81]
+  let firstResult = null // resolves the warmup promise
   let resultCount = 0
 
   const handleFrameResults = (results) => {
@@ -106,8 +82,8 @@ export async function streamVideoThroughWs(
   }
   setResultsHandler(handleFrameResults)
 
-  // Mất ngữ cảnh WebGL là instance hỏng vĩnh viễn — thử dựng lại một lần.
-  // disposeHolistic() xoá cả handler nên phải đăng ký lại.
+  // WebGL context loss permanently breaks the instance — try rebuilding it once.
+  // disposeHolistic() also clears the handler, so re-register it.
   let recoveryUsed = false
   const recoverHolistic = async () => {
     if (recoveryUsed) return false
@@ -119,7 +95,6 @@ export async function streamVideoThroughWs(
   }
 
   try {
-    // ---- Giai đoạn 1: hâm nóng (video đứng yên) ----
     onPhase?.('warmup')
     if (video.readyState < 2) await onceEvent(video, 'loadeddata', 10000)
     video.pause()
@@ -140,7 +115,7 @@ export async function streamVideoThroughWs(
         clearTimeout(timer)
         resolve()
       }
-      // Bắn liên tục cho tới khi model tải xong và trả về đủ kết quả.
+      // keep sending until the model finishes loading and returns enough results
       let fatal = false
       let failures = 0
       const kick = () => {
@@ -151,13 +126,13 @@ export async function streamVideoThroughWs(
           })
           .catch(async (err) => {
             failures++
-            // Vài lần đầu có thể chỉ là frame chưa sẵn sàng.
+            // first few failures may just be frame-not-ready
             if (failures === 3) {
               try {
                 await recoverHolistic()
                 return
               } catch {
-                // Dựng lại cũng không xong -> rơi xuống nhánh báo lỗi bên dưới.
+                // rebuild failed too -> fall through to the error branch below
               }
             }
             if (failures >= 6) {
@@ -174,11 +149,10 @@ export async function streamVideoThroughWs(
     })
     if (cancelled()) return 'cancelled'
 
-    // ---- Giai đoạn 2: phát và dịch ----
     onPhase?.('playing')
     return await new Promise((resolve, reject) => {
       let done = false
-      // Dùng 25 fps ngay, không chờ đo: nhịp gửi phải chạy từ frame đầu tiên.
+      // use 25fps immediately (don't wait to measure) — emission must start from frame one
       let fps = DEFAULT_FPS
       let fpsMeasured = false
       let emitted = 0
@@ -210,12 +184,12 @@ export async function streamVideoThroughWs(
 
       function onEnded() {
         if (done || cancelled()) return
-        // end_sign: backend flush ký hiệu đang dở rồi ghép câu + đọc.
+        // end_sign: backend flushes the pending sign, builds the sentence, and speaks it
         if (latest) wsClient.sendKeypoints(latest[0], latest[1], true)
         finish('completed')
       }
 
-      /** Gửi bù cho tới đúng số frame video đã trôi qua (lặp lại keypoint gần nhất). */
+      /** Catches up to the video's current frame count, repeating the latest keypoint. */
       function catchUp(mediaTime) {
         const target = Math.floor(mediaTime * fps)
         if (!latest) {
@@ -241,11 +215,11 @@ export async function streamVideoThroughWs(
           .catch(async (err) => {
             sendFailures++
             if (sendFailures === 3) {
-              // Mất ngữ cảnh WebGL giữa chừng -> dựng lại instance rồi chạy tiếp.
+              // WebGL context lost mid-stream -> rebuild the instance and continue
               try {
                 if (await recoverHolistic()) return
               } catch {
-                // Không dựng lại được -> báo lỗi ở lần thứ 6.
+                // rebuild failed -> error reported at the 6th failure
               }
             }
             if (sendFailures >= 6) {
@@ -255,13 +229,13 @@ export async function streamVideoThroughWs(
           .finally(() => {
             if (done || cancelled()) return
             pumpAliveAt = performance.now()
-            // Nhường luồng chính một nhịp cho React và vòng gửi keypoint.
+            // yield the main thread briefly for React and the keypoint-sending loop
             setTimeout(pump, performance.now() - t0 < 5 ? 15 : 0)
           })
       }
 
-      // Dùng setInterval chứ không requestVideoFrameCallback: rVFC bị bỏ qua khi luồng chính
-      // bận. Mốc thời gian lấy từ video.currentTime nên timer trễ vẫn gửi bù đúng số frame.
+      // setInterval, not requestVideoFrameCallback: rVFC gets skipped when the main thread is
+      // busy. Timing uses video.currentTime, so a delayed timer still catches up correctly.
       const tick = () => {
         if (done) return
         if (cancelled()) return finish('cancelled')
@@ -271,7 +245,7 @@ export async function streamVideoThroughWs(
         const now = performance.now()
         if (pumpAliveAt && now - pumpAliveAt > PUMP_WATCHDOG_MS) {
           pumpAliveAt = now
-          pump() // vòng MediaPipe kẹt -> khởi động lại
+          pump() // MediaPipe loop stuck -> restart it
         }
         if (now - windowStart >= STATS_WINDOW_MS) {
           mediapipeFps = ((resultCount - windowBase) * 1000) / (now - windowStart)
@@ -285,11 +259,7 @@ export async function streamVideoThroughWs(
         }
       }
 
-      /**
-       * Đo fps song song với MediaPipe (hoãn MediaPipe để đo sẽ tạo vùng chết đầu video và
-       * làm mất ký hiệu bắt đầu sớm). Lấy khoảng cách NHỎ NHẤT chứ không phải trung vị: frame
-       * bị bỏ chỉ làm khoảng cách lớn hơn. Số đo vô lý thì giữ mặc định 25 fps.
-       */
+      /** Measures fps alongside MediaPipe (pausing to measure would create a dead zone and miss early signs); uses the smallest frame gap, not the median, since dropped frames only inflate gaps — falls back to 25fps if unreasonable. */
       const measureFps = () => {
         if (done || typeof video.requestVideoFrameCallback !== 'function') return
         const deadline = performance.now() + 2500
@@ -307,7 +277,7 @@ export async function streamVideoThroughWs(
           const measured = 1 / smallest
           if (measured >= 15 && measured <= 61) {
             fps = measured
-            emitted = Math.floor(video.currentTime * fps) // đồng bộ lại mốc đếm
+            emitted = Math.floor(video.currentTime * fps) // resync the frame counter
           }
           fpsMeasured = true
         }

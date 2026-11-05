@@ -1,5 +1,5 @@
-# Build context = chinh thu muc nay (backend/), chua ca AI core (src/) lan serving/.
-# Chay tu backend/:  docker compose up --build
+# Build context is backend/ (includes src/ and serving/).
+# Run with: docker compose up --build
 services:
   backend:
     build:

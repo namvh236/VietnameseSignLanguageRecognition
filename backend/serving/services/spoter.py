@@ -1,10 +1,6 @@
-"""Wrapper inference SPOTER (ONNX).
-
-Client gui keypoint da qua MediaPipe Holistic + chon khop, nen o day chi con:
-    (seq_len, 54, 2) pixel -> chuoi chuan hoa -> poses (1, seq_len, 54, 2) -> ONNX -> probabilities.
-File spoter_v3.onnx XUAT SAN "probabilities" (softmax trong graph) -> dung THANG, KHONG softmax lai.
-Chay trong ThreadPoolExecutor de khong block event loop.
-"""
+"""SPOTER (ONNX) inference wrapper. The client already ran MediaPipe Holistic + joint
+selection, so only normalization + ONNX inference remain; spoter_v3.onnx bakes in
+softmax, so "probabilities" is used as-is. Runs in a ThreadPoolExecutor."""
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +25,7 @@ class SpoterService:
 
     def load(self) -> None:
         self._transforms = load_transforms()
-        # Giup onnxruntime-gpu tim CUDA/cuDNN cai qua pip (cac goi nvidia-*-cu12).
+        # Helps onnxruntime-gpu find CUDA/cuDNN installed via pip (nvidia-*-cu12).
         if hasattr(ort, "preload_dlls"):
             try:
                 ort.preload_dlls()
@@ -41,9 +37,8 @@ class SpoterService:
         logger.info("SPOTER san sang. ONNX providers: %s", self.session.get_providers())
 
     def _probs_sync(self, snapshot: np.ndarray) -> np.ndarray:
-        """Dong bo. snapshot: (seq_len, 54, 2) pixel -> vector xac suat (num_classes,).
-
-        spoter_v3.onnx xuat san "probabilities" -> dung thang, khong softmax lai.
+        """Sync: (seq_len, 54, 2) pixel -> probabilities (num_classes,). spoter_v3.onnx
+        already outputs softmax, so the result is used as-is.
         """
         tensor = self._transforms(torch.from_numpy(snapshot))
         poses = tensor.unsqueeze(0).cpu().numpy().astype(np.float32)  # (1, seq_len, 54, 2)
@@ -57,13 +52,11 @@ class SpoterService:
     def _fused_infer_sync(
         self, spoter_snapshot: np.ndarray, slgcn_snapshot: np.ndarray | None
     ) -> tuple[int, float, bool]:
-        """LATE-FUSION SPOTER + SL-GCN cho luong realtime/REST.
-
-        spoter_snapshot: (seq_len, 54, 2). slgcn_snapshot: (T, 27, 3) raw [x,y,conf] hoac None.
-        Neu thieu SL-GCN (client cu / khong nap duoc) -> SPOTER-only. Tra (idx, conf, da_fuse).
+        """Late-fusion SPOTER + SL-GCN for realtime/REST; falls back to SPOTER-only if
+        SL-GCN is unavailable. Returns (idx, confidence, fused?).
         """
         p_spoter = self._probs_sync(spoter_snapshot)
-        # Import LUOI de tranh vong import voi dependencies.py.
+        # Lazy import to avoid a circular import with dependencies.py.
         from serving.dependencies import get_slgcn
         from serving.services.slgcn import preprocess_snapshot
 

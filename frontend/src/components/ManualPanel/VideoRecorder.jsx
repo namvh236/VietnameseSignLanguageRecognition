@@ -1,15 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Circle, Square, Loader2, VideoOff } from 'lucide-react'
 
-/**
- * Tự quay một clip bằng webcam rồi giao lại cho UploadPlayer dịch (cùng đường realtime:
- * MediaPipe trong trình duyệt -> keypoint -> WebSocket).
- *
- * Khung xem trước lật gương cho người ký dễ soi, nhưng dữ liệu ghi vào file là ảnh GỐC —
- * MediaPipe đọc frame từ file nên clip không được lật, đúng như dữ liệu lúc huấn luyện.
- */
+/** Records via webcam then hands off to UploadPlayer (same pipeline: MediaPipe -> keypoints -> WebSocket).
+ * Preview is mirrored for the signer, but the saved file is NOT flipped — MediaPipe reads raw frames, matching training data. */
 
-const MAX_MS = 60000 // tự dừng sau 60s, tránh clip dài vô tận
+const MAX_MS = 60000 // auto-stop after 60s to cap clip length
 const MIME_CANDIDATES = [
   'video/webm;codecs=vp9',
   'video/webm;codecs=vp8',
@@ -17,13 +12,13 @@ const MIME_CANDIDATES = [
   'video/mp4',
 ]
 
-/** Trình duyệt nào hỗ trợ codec nào rất khác nhau -> lấy lựa chọn đầu tiên chạy được. */
+/** Codec support varies by browser; pick the first one that works. */
 function pickMimeType() {
   if (typeof MediaRecorder === 'undefined') return null
   for (const mime of MIME_CANDIDATES) {
     if (MediaRecorder.isTypeSupported(mime)) return mime
   }
-  return '' // để trình duyệt tự chọn
+  return '' // let the browser choose
 }
 
 function formatTime(ms) {
@@ -41,8 +36,8 @@ export default function VideoRecorder({ onRecorded }) {
   const startedAtRef = useRef(0)
   const timerRef = useRef(null)
   const autoStopRef = useRef(null)
-  // Phiên camera: cleanup tăng token để huỷ lần getUserMedia đang chờ (resolve sau khi
-  // component đã rời đi thì phải tắt ngay, không để camera treo bật).
+  // Session token: bumping it lets a pending getUserMedia resolve after unmount be
+  // discarded immediately instead of leaving the camera stuck on.
   const sessionRef = useRef(0)
 
   const [isRecording, setIsRecording] = useState(false)
@@ -50,7 +45,7 @@ export default function VideoRecorder({ onRecorded }) {
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
 
-  // Mở camera một lần cho cả vòng đời component.
+  // Open the camera once for the component's lifetime.
   useEffect(() => {
     const session = ++sessionRef.current
     let localStream = null
@@ -97,11 +92,11 @@ export default function VideoRecorder({ onRecorded }) {
       clearTimeout(autoStopRef.current)
       const rec = recorderRef.current
       if (rec && rec.state !== 'inactive') {
-        rec.onstop = null // rời component giữa lúc quay -> bỏ clip dở
+        rec.onstop = null // unmounted mid-recording -> discard the half-finished clip
         try {
           rec.stop()
         } catch {
-          // recorder đã chết theo stream, không cần xử lý gì
+          // recorder already died with the stream, nothing to do
         }
       }
       streamRef.current?.getTracks().forEach(t => t.stop())
@@ -147,8 +142,8 @@ export default function VideoRecorder({ onRecorded }) {
       clearInterval(timerRef.current)
       clearTimeout(autoStopRef.current)
       setIsRecording(false)
-      // Đo bằng đồng hồ: webm do MediaRecorder tạo có duration = Infinity, thanh tiến độ
-      // của UploadPlayer cần một con số thật.
+      // Measure via wall clock: MediaRecorder's webm reports duration = Infinity, but
+      // UploadPlayer's progress bar needs a real number.
       const duration = (performance.now() - startedAtRef.current) / 1000
       const type = recorder.mimeType || mime || 'video/webm'
       const blob = new Blob(chunksRef.current, { type })
@@ -178,7 +173,7 @@ export default function VideoRecorder({ onRecorded }) {
     startedAtRef.current = performance.now()
     setElapsed(0)
     setIsRecording(true)
-    recorder.start(200) // cắt chunk đều tay để không mất dữ liệu nếu tab bị treo
+    recorder.start(200) // fixed chunk interval avoids losing data if the tab freezes
     timerRef.current = setInterval(
       () => setElapsed(performance.now() - startedAtRef.current),
       200

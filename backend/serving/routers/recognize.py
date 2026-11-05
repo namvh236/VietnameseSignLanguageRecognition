@@ -1,4 +1,4 @@
-"""POST /api/recognize -- fallback one-shot: danh sach frame keypoint -> gloss + cau."""
+"""POST /api/recognize -- fallback one-shot: keypoint frame list -> gloss + sentence."""
 
 import numpy as np
 from fastapi import APIRouter
@@ -20,7 +20,7 @@ async def recognize(req: RecognizeRequest):
     buffer = FrameBuffer(settings.spoter_seq_len, settings.session_stride)
     glosses: list[str] = []
 
-    # slgcn_frames (tuy chon) chay song song voi frames -> late-fusion; thieu thi SPOTER-only.
+    # slgcn_frames (optional) runs parallel for late-fusion; SPOTER-only if absent.
     slgcn_frames = req.slgcn_frames
     for i, frame in enumerate(req.frames):
         slgcn_frame = (

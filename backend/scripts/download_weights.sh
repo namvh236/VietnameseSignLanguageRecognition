@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Kiem tra artifact model ton tai duoi goc du an (khong tai gi ve).
-# Artifact (ONNX + gloss.csv) nam cung cay voi serving; serving tham chieu qua serving/config.py.
+# Check that model artifacts already exist under the project root (no download).
+# Artifacts (ONNX + gloss.csv) live next to serving; see serving/config.py.
 set -euo pipefail
 
-# scripts/ -> .. = goc du an (backend/), noi chua models/ va experiments/.
+# scripts/ -> .. = project root (backend/), holding models/ and experiments/.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_ROOT="${RECOGNITION_ROOT:-$ROOT}"
 

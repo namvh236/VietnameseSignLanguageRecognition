@@ -1,7 +1,5 @@
-"""Chuyen class index -> gloss string, loc theo confidence.
-
-Nhan doc tu recognition/experiments/gloss.csv (dinh dang `id,gloss`, khong header, 400 dong).
-"""
+"""Maps class index -> gloss string, filtered by confidence. Labels are read from
+experiments/gloss.csv (`id,gloss`, no header, 400 rows)."""
 
 import csv
 from pathlib import Path
@@ -15,7 +13,7 @@ UNKNOWN = "<UNK>"
 
 
 def dedupe_consecutive(glosses: list[str]) -> list[str]:
-    """Bo cac tu trung LIEN KE (cung mot ky hieu bi nhan dang nhieu lan lien tiep)."""
+    """Drops consecutive duplicate words (same sign recognized repeatedly in a row)."""
     return [g for i, g in enumerate(glosses) if i == 0 or g != glosses[i - 1]]
 
 
@@ -32,11 +30,11 @@ class GlossDecoder:
         logger.info("Da nap %d nhan gloss tu %s", len(self._map), self._path)
 
     def decode(self, class_idx: int, confidence: float) -> str | None:
-        """Tra ve gloss neu confidence dat nguong, nguoc lai None."""
+        """Returns the gloss if confidence meets the threshold, else None."""
         if confidence < settings.spoter_confidence_threshold:
             return None
         return self._map.get(class_idx, UNKNOWN)
 
     def label(self, class_idx: int) -> str:
-        """Tra ve gloss tho (khong loc confidence) — nguoi goi tu ap nguong rieng (vd video)."""
+        """Raw gloss, unfiltered -- callers apply their own threshold (e.g. video)."""
         return self._map.get(class_idx, UNKNOWN)

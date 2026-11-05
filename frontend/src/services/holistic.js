@@ -1,8 +1,5 @@
 /**
- * MediaPipe Holistic dùng chung cho camera realtime và trình phát video upload: model chỉ
- * tải từ CDN một lần, không có hai đồ thị chạy song song tranh GPU.
- *
- * Chỉ MỘT nơi tiêu thụ kết quả tại một thời điểm — setResultsHandler() ghi đè handler cũ.
+ * Shared MediaPipe Holistic instance for camera + video (avoids loading it twice or fighting over the GPU context); setResultsHandler() replaces the previous handler, so only one consumer runs at a time.
  */
 
 const CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/holistic'
@@ -11,7 +8,7 @@ let holistic = null
 let initPromise = null
 let resultsHandler = null
 
-/** Chờ script MediaPipe từ CDN tải xong (index.html nạp bằng thẻ <script>). */
+/** Waits for the MediaPipe script tag (loaded in index.html) to finish loading. */
 function waitForScript(timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
     if (window.Holistic) return resolve()
@@ -27,15 +24,14 @@ function waitForScript(timeoutMs = 20000) {
   })
 }
 
-/** Lấy (và khởi tạo nếu cần) instance Holistic dùng chung. */
 export function getHolistic() {
   if (holistic) return Promise.resolve(holistic)
   if (!initPromise) {
     initPromise = (async () => {
       await waitForScript()
       const instance = new window.Holistic({ locateFile: (file) => `${CDN}/${file}` })
-      // Giữ nguyên tham số của luồng camera để keypoint cùng phân bố với dữ liệu mà
-      // ngưỡng nhận dạng phía backend đã căn theo.
+      // Keep params identical to the camera stream: backend recognition thresholds are
+      // calibrated to this exact keypoint distribution.
       instance.setOptions({
         modelComplexity: 1,
         smoothLandmarks: true,
@@ -47,22 +43,20 @@ export function getHolistic() {
       holistic = instance
       return instance
     })().catch((err) => {
-      initPromise = null // cho phép thử lại lần sau
+      initPromise = null // allow a retry next time
       throw err
     })
   }
   return initPromise
 }
 
-/** Đăng ký nơi nhận kết quả mỗi frame. Truyền null khi rời màn hình để nhả quyền. */
+/** Registers the per-frame results handler; pass null on unmount to release it. */
 export function setResultsHandler(fn) {
   resultsHandler = fn
 }
 
 /**
- * Đổi độ phức tạp model khi đang chạy (0 = Lite, nhanh hơn nhưng bắt bàn tay kém hơn).
- * Instance dùng chung nên nơi gọi phải trả lại mức cũ. setOptions() nạp lại đồ thị model
- * (~1 giây) — chỉ gọi lúc bắt đầu/kết thúc, đừng gọi giữa vòng lặp frame.
+ * Runtime model-complexity change (0 = Lite: faster, worse hand tracking); reloads the model graph (~1s) — call only at start/end, never mid-frame-loop; shared instance, so restore the previous value after.
  */
 export function setModelComplexity(complexity) {
   if (!holistic) return
@@ -74,8 +68,7 @@ export function isHolisticReady() {
 }
 
 /**
- * Vứt instance để lần getHolistic() sau tạo lại từ đầu. Cần khi MediaPipe mất ngữ cảnh
- * WebGL — instance cũ hỏng vĩnh viễn, mọi send() sau đó đều ném lỗi.
+ * Drops the instance so the next getHolistic() recreates it; needed when WebGL context loss permanently breaks the old instance (later send() calls all throw).
  */
 export function disposeHolistic() {
   const instance = holistic
@@ -85,6 +78,6 @@ export function disposeHolistic() {
   try {
     instance?.close?.()
   } catch {
-    // Instance đã hỏng thì close() cũng có thể ném — không sao, ta bỏ nó đi rồi.
+    // instance may already be broken; close() can throw too — safe to ignore, we're discarding it
   }
 }

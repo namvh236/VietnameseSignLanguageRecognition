@@ -18,7 +18,6 @@
   }
 }
 
-/* Custom animated background elements */
 .ambient-glow {
   position: absolute;
   width: 500px;
@@ -30,7 +29,6 @@
   border-radius: 50%;
 }
 
-/* Premium scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -49,7 +47,6 @@
   background: rgba(99, 102, 241, 0.6);
 }
 
-/* Keyframe animations for glow and statuses */
 @keyframes pulse-glow {
   0%, 100% {
     box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);

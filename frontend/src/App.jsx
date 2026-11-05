@@ -63,8 +63,8 @@ export default function App() {
     document.head.appendChild(newFavicon)
   }, [theme])
 
-  // Tab realtime đang mở -> ResultPanel hiển thị kết quả nguồn 'realtime'.
-  // (Khi sang tab thủ công, ManualPanel tự đặt activeSource = 'upload'/'record'.)
+  // realtime tab open -> ResultPanel shows 'realtime' source results; manual tabs set
+  // activeSource to 'upload'/'record' themselves.
   useEffect(() => {
     if (activeTab === 'realtime') setActiveSource('realtime')
   }, [activeTab, setActiveSource])
@@ -72,8 +72,8 @@ export default function App() {
   useEffect(() => {
     if (view !== 'demo') return
 
-    // Ghi kết quả vào nguồn đang stream. Đọc getState() ngay lúc có tin nhắn (không capture
-    // vào closure) để luôn lấy nguồn hiện tại.
+    // Write to the currently streaming source; read getState() per message (not a stale
+    // closure) so the source is always current.
     const sink = () => useSignStore.getState().wsSink
 
     wsClient.connect({
@@ -85,7 +85,6 @@ export default function App() {
       onFinished: (info) => markFinished(sink(), info),
     })
 
-    // Clean up connections on unmount
     return () => {
       wsClient.disconnect()
     }
@@ -108,24 +107,18 @@ export default function App() {
   return (
     <div className="relative flex flex-col h-screen w-screen overflow-hidden bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 font-sans transition-colors duration-300">
       
-      {/* Tech grid background */}
       <div className="absolute inset-0 bg-[linear-gradient(to_right,#0f172a04_1px,transparent_1px),linear-gradient(to_bottom,#0f172a04_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,#ffffff02_1px,transparent_1px),linear-gradient(to_bottom,#ffffff02_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] pointer-events-none" />
 
-      {/* Decorative ambient glowing background rings */}
       <div className="absolute top-[-100px] left-[-100px] ambient-glow pointer-events-none" />
       <div className="absolute bottom-[-150px] right-[-150px] ambient-glow pointer-events-none" />
 
-      {/* Global Header / StatusBar spanning full width */}
       <StatusBar status={wsStatus} activeTab={activeTab} setActiveTab={setActiveTab} onBack={goBackToLanding} />
 
-      {/* Main interactive grid container */}
       <div className="relative z-10 flex flex-col md:flex-row flex-1 w-full min-h-0 overflow-hidden">
-        {/* Left Side: Live Feed (takes 2/3 on desktop) */}
         <main className="w-full md:w-2/3 h-1/2 md:h-full flex flex-col min-h-0">
           <CameraPanel activeTab={activeTab} />
         </main>
 
-        {/* Right Side: Translation Output (takes 1/3 on desktop) */}
         <aside className="w-full md:w-1/3 h-1/2 md:h-full flex flex-col min-h-0">
           <ResultPanel />
         </aside>

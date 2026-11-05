@@ -1,17 +1,11 @@
 /**
- * Chuyển kết quả MediaPipe Holistic thành vector 108 số (54 khớp x (x, y))
- * đúng định dạng SPOTER backend mong đợi.
- *
- * Thứ tự khớp = thứ tự JointSelect của pipeline (pose_format):
- *   12 khớp thân, rồi 21 khớp tay TRÁI, rồi 21 khớp tay PHẢI.
- * Toạ độ là PIXEL (MediaPipe trả 0..1 nên nhân với width/height).
- * Khớp neck (index 1) luôn = [0, 0]; khớp thiếu (không nhận diện) = [0, 0].
+ * SPOTER vector: 108 numbers; joint order = 12 body + 21 left hand + 21 right hand; neck (index 1) and missing joints = [0, 0]; coords in pixels.
  */
 
-// Chỉ số landmark MediaPipe Pose theo thứ tự thân của JointSelect (null = neck synthesize 0).
+// MediaPipe Pose landmark indices in JointSelect body order (null = synthesized neck).
 const POSE_MAP = [0, null, 5, 2, 8, 7, 12, 11, 14, 13, 16, 15]
 
-// Chỉ số landmark MediaPipe Hand theo thứ tự tay của JointSelect (dùng cho cả 2 tay).
+// MediaPipe Hand landmark indices in JointSelect order (used for both hands).
 const HAND_MAP = [0, 8, 7, 6, 5, 12, 11, 10, 9, 16, 15, 14, 13, 19, 20, 18, 17, 4, 3, 2, 1]
 
 const KEYPOINTS_LEN = (POSE_MAP.length + HAND_MAP.length * 2) * 2 // 108
@@ -44,18 +38,14 @@ export function extractKeypoints(results, width, height) {
   return out
 }
 
-// ===== SL-GCN keypoints (nhánh 2 của late-fusion) =====
-// 27 khớp x (x, y, confidence) = 81 số, thứ tự SLGCN_JOINTS[27]: 7 khớp thân, 10 tay TRÁI, 10 tay PHẢI.
-// Tái hiện ĐÚNG cách pose_format gán confidence: thân = visibility của MediaPipe Pose,
-// tay = 1.0 nếu bàn tay được phát hiện (cả 10 khớp), ngược lại 0. Khớp thiếu = [0, 0, 0].
-// Server chuẩn hoá (normalize_distribution) từ các số này — đã kiểm chứng khớp bit-exact với AI core.
+// SL-GCN branch: 81 nums (27 joints x x,y,confidence) = 7 body + 10 left hand + 10 right hand.
+// Confidence mirrors pose_format: body = MediaPipe visibility, hand = 1.0 if detected else 0,
+// missing joint = [0,0,0]. Must stay bit-exact with backend normalize_distribution.
 
-// Chỉ số landmark MediaPipe Pose cho 7 khớp thân SL-GCN:
-//   nose, leftShoulder, rightShoulder, leftElbow, rightElbow, leftWrist, rightWrist
+// SL-GCN body landmarks: nose, L/R shoulder, L/R elbow, L/R wrist.
 const SLGCN_POSE_MAP = [0, 11, 12, 13, 14, 15, 16]
 
-// Chỉ số landmark MediaPipe Hand cho 10 khớp tay SL-GCN (dùng cho cả 2 tay):
-//   wrist, thumbTip, indexMCP, indexTip, middleMCP, middleTip, ringMCP, ringTip, pinkyMCP, pinkyTip
+// SL-GCN hand landmarks (both hands): wrist, thumb/index/middle/ring/pinky MCP + tip.
 const SLGCN_HAND_MAP = [0, 4, 5, 8, 9, 12, 13, 16, 17, 20]
 
 const SLGCN_KEYPOINTS_LEN = (SLGCN_POSE_MAP.length + SLGCN_HAND_MAP.length * 2) * 3 // 81
@@ -70,19 +60,19 @@ export function extractSlgcnKeypoints(results, width, height) {
     if (lm) {
       out[o] = lm.x * width
       out[o + 1] = lm.y * height
-      out[o + 2] = lm.visibility ?? 0 // confidence thân = visibility
+      out[o + 2] = lm.visibility ?? 0 // body confidence = visibility
     }
     o += 3
   }
 
-  // Tay TRÁI rồi tay PHẢI (khớp thứ tự LEFT/RIGHT_HAND_LANDMARKS của pose_format).
+  // Left hand then right hand, matching pose_format's LEFT/RIGHT_HAND_LANDMARKS order.
   for (const hand of [results.leftHandLandmarks, results.rightHandLandmarks]) {
     for (const idx of SLGCN_HAND_MAP) {
       const lm = hand ? hand[idx] : null
       if (lm) {
         out[o] = lm.x * width
         out[o + 1] = lm.y * height
-        out[o + 2] = 1.0 // confidence tay = 1.0 khi bàn tay được phát hiện
+        out[o + 2] = 1.0 // hand confidence = 1.0 when detected
       }
       o += 3
     }

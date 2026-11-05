@@ -1,12 +1,6 @@
-"""Nhan dang ky hieu tu FILE video (upload/quay webcam).
-
-Khac voi luong realtime (client gui keypoint qua WebSocket), o day server nhan ca file video
-tho, tu doc frame -> tu cat thanh nhieu ky hieu (heuristic goc canh tay) -> phan loai tung doan.
-Logic port tu backend/demo_gradio.py (KHONG import demo vi demo co side-effect luc import:
-nap ONNX, in log...). Dung LAI phien ONNX da nap cua SpoterService -> chi mot phien duy nhat.
-
-Chay trong ThreadPoolExecutor vi cv2 + MediaPipe deu blocking.
-"""
+"""Sign recognition from a video FILE: reads frames, segments by arm-angle heuristic,
+classifies each segment. Logic ported from demo_gradio.py (not imported: it has
+import-time side effects); reuses SpoterService's ONNX session (ThreadPoolExecutor)."""
 
 import asyncio
 from collections import deque
@@ -32,7 +26,7 @@ _mp_pose = mp.solutions.pose
 
 
 def _arm_angle(shoulder, elbow, wrist):
-    """Goc khuyu tay (vai-khuyu-co tay), do. Tay buong thang ~180, gio/gap lai nho hon."""
+    """Elbow angle (shoulder-elbow-wrist), degrees; ~180 straight, smaller when bent."""
     radians = np.arctan2(wrist[1] - elbow[1], wrist[0] - elbow[0]) - np.arctan2(
         shoulder[1] - elbow[1], shoulder[0] - elbow[0]
     )
@@ -41,10 +35,8 @@ def _arm_angle(shoulder, elbow, wrist):
 
 
 def _hands_up_from_pose(pose, frame_rgb, angle_threshold, visibility_threshold):
-    """(tay dang gio?, danh sach toa do co tay nhin thay [chuan hoa 0..1]).
-
-    "Dang gio" = it nhat mot tay co goc khuyu < nguong + co tay du hien thi.
-    """
+    """(hand up?, visible wrist coords [normalized 0..1]). "Up" = at least one arm has
+    elbow angle below threshold and a visible wrist."""
     res = pose.process(frame_rgb)
     if not res.pose_landmarks:
         return False, []
@@ -65,7 +57,7 @@ def _hands_up_from_pose(pose, frame_rgb, angle_threshold, visibility_threshold):
 
 
 def _track_motion(track):
-    """Bien do di chuyen lon nhat (toa do chuan hoa) cua chuoi vi tri co tay."""
+    """Largest displacement (normalized coords) across the wrist position track."""
     pts = np.array([p for p in track if p is not None], dtype=np.float32)
     if len(pts) < 2:
         return 0.0
@@ -73,7 +65,7 @@ def _track_motion(track):
 
 
 def read_frames(path: str):
-    """Doc file video -> (frames RGB, fps, width, height). Loi neu khong co frame nao."""
+    """Reads a video file -> (RGB frames, fps, width, height); errors if none read."""
     cap = cv2.VideoCapture(path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frames = []
@@ -101,12 +93,9 @@ def segment_video(
     min_wrist_motion=0.04,
     model_complexity=None,
 ):
-    """Tach video NHIEU ky hieu thanh danh sach cac doan frame (moi doan ~1 ky hieu).
-
-    Chay offline cung logic tay len/xuong voi mode realtime (MediaPipe Pose tung frame).
-    Doan ma co tay gan nhu dung yen (< min_wrist_motion) bi loai — tu the nghi lot qua nguong goc.
-    model_complexity: do phuc tap MediaPipe Pose (mac dinh lay tu config, 0 = nhanh nhat).
-    """
+    """Splits a multi-sign video into frame segments (~1 sign each); offline version of
+    the realtime hand up/down logic. Segments with near-still hands (< min_wrist_motion)
+    are dropped as a resting pose; model_complexity defaults from config (0=fastest)."""
     if model_complexity is None:
         model_complexity = settings.video_pose_model_complexity
     pose = _mp_pose.Pose(
@@ -140,7 +129,7 @@ def segment_video(
                         segments.append(buf)
                     active, up, down, buf, track = False, 0, 0, [], []
                     preroll.clear()
-        # Doan con do o cuoi video (chua kip ha tay).
+        # Trailing segment at end of video (hands never came down).
         if active and len(buf) >= min_sign_frames and _track_motion(track) >= min_wrist_motion:
             segments.append(buf)
     finally:
@@ -155,9 +144,8 @@ class VideoRecognizerService:
         self._slgcn_transforms = None
 
     def load(self) -> None:
-        """Nap tien xu ly cho LATE-FUSION: PoseExtract dung chung + nhanh SPOTER + nhanh SL-GCN.
-
-        Phien ONNX dung LAI cua SpoterService + SlgcnService (nap o warmup)."""
+        """Loads late-fusion preprocessing: shared PoseExtract + SPOTER/SL-GCN branches;
+        reuses the ONNX sessions already loaded by SpoterService + SlgcnService."""
         self._pose_extract = load_pose_extract()
         self._spoter_transforms = load_spoter_graph_transforms()
         self._slgcn_transforms = load_slgcn_transforms()
@@ -168,13 +156,10 @@ class VideoRecognizerService:
         )
 
     def _classify_frames(self, frames, fps, w, h) -> tuple[str | None, float]:
-        """Danh sach frame RGB -> (gloss top-1 | None, conf) qua LATE-FUSION SPOTER + SL-GCN.
-
-        Trich Pose 1 lan roi re 2 nhanh; hop nhat o tang xac suat:
-            P = W_SLGCN * P_slgcn + (1 - W_SLGCN) * P_spoter.
-        Ca hai ONNX xuat san "probabilities" -> KHONG softmax lai.
-        """
-        # Import LUOI de tranh vong import (dependencies.py import module nay).
+        """RGB frames -> (top-1 gloss | None, confidence) via SPOTER+SL-GCN late-fusion:
+        extracts Pose once, branches, merges as P = W*P_slgcn + (1-W)*P_spoter.
+        Both ONNX graphs already output softmaxed probabilities."""
+        # Lazy import: dependencies.py imports this module (would be circular).
         from serving.dependencies import get_gloss_decoder, get_slgcn, get_spoter
 
         spoter_session = get_spoter().session
@@ -182,20 +167,20 @@ class VideoRecognizerService:
             raise RuntimeError("SpoterService chua nap — khong co phien ONNX de infer.")
         slgcn = get_slgcn()
 
-        # PoseExtract dung chung (chay 1 lan). Ha do phuc tap Holistic -> nhanh hon.
-        # LUU Y: khong cat bot frame TRUOC chuan hoa — chuan hoa dung thong ke toan chuoi.
+        # Shared PoseExtract (runs once); lower Holistic complexity for speed.
+        # NOTE: don't trim frames before normalization -- it uses whole-sequence stats.
         holistic_config = {"model_complexity": settings.video_holistic_model_complexity}
         pose = self._pose_extract(
             {"frames": frames, "fps": fps, "width": w, "height": h, "holistic_config": holistic_config}
         )
 
-        # Nhanh SPOTER TRUOC (chi doc pixel tho, khong mutate Pose).
+        # SPOTER branch first (reads raw pixels only, doesn't mutate Pose).
         spoter_tensor = self._spoter_transforms(pose)
         spoter_in = spoter_tensor.unsqueeze(0).cpu().numpy().astype(np.float32)  # (1, 70, 54, 2)
         p_spoter = spoter_session.run(["probabilities"], {"poses": spoter_in})[0][0]
 
-        # Nhanh SL-GCN SAU (SLGCNJointSelect goi normalize_distribution -> mutate Pose).
-        # Neu SL-GCN chua nap thi lui ve SPOTER-only (khong lam sap luong video).
+        # SL-GCN branch after (calls normalize_distribution, mutating Pose).
+        # Falls back to SPOTER-only if SL-GCN isn't loaded (keeps the video flow alive).
         if slgcn.session is not None:
             slgcn_arr = self._slgcn_transforms(pose)                        # (3, 150, 27, 1)
             slgcn_in = slgcn_arr[None].astype(np.float32)                   # (1, 3, 150, 27, 1)
@@ -211,10 +196,8 @@ class VideoRecognizerService:
         return gloss, float(probs[idx])
 
     def recognize_video_file(self, path: str) -> list[str]:
-        """Dong bo (chay trong thread pool): file video -> danh sach tu (gloss) theo thu tu.
-
-        Tu tach video thanh nhieu ky hieu roi phan loai tung doan; chi giu tu du tin cay.
-        """
+        """Sync (runs in the thread pool): video file -> ordered gloss list. Segments
+        the video into signs, classifies each, keeps only confident glosses."""
         if self._pose_extract is None:
             self.load()
         frames, fps, w, h = read_frames(path)
@@ -227,7 +210,7 @@ class VideoRecognizerService:
                 skipped += 1
                 continue
             glosses.append(gloss)
-        # Trong MOT video, tu trung lien ke (cung ky hieu bi cat lam nhieu doan) -> giu 1.
+        # A video's consecutive duplicate words (a sign split across segments) collapse.
         deduped = dedupe_consecutive(glosses)
         logger.info(
             "Video: %d doan cat, %d tu nhan dang (%d sau khi bo trung lien ke), %d doan bo (duoi %.0f%%).",

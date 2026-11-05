@@ -1,2 +1,2 @@
-"""Tien xu ly pose cho SPOTER (serving). Import truc tiep tu
-pipelines.spoter_graph_classification — package nay khong re-export gi."""
+"""Pose preprocessing for SPOTER (serving); import directly from
+spoter_graph_classification, this package re-exports nothing."""

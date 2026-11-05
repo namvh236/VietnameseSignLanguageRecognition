@@ -1,4 +1,4 @@
-"""Trang thai mot phien WebSocket. Tao BEN TRONG handler, khong chia se giua cac phien."""
+"""State for one WebSocket session; created per handler call, never shared."""
 
 from dataclasses import dataclass, field
 

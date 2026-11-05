@@ -9,9 +9,9 @@ class WebSocketClient {
     this.reconnectTimer = null
     this.shouldReconnect = false
     this.reconnectAttempts = 0
-    // Trạng thái để tự động chốt câu khi nghỉ tay (idle finalize).
+    // state for idle-finalize (auto-ending a sentence after inactivity)
     this.lastGlossAt = 0
-    this.hasPending = false // có gloss chưa được ghép câu
+    this.hasPending = false // true when a gloss hasn't been folded into a sentence yet
   }
 
   connect({ onStatus, onGloss, onSentence, onAudio, onProcessing, onFinished }) {
@@ -61,7 +61,7 @@ class WebSocketClient {
     }
 
     this.ws.onmessage = (event) => {
-      // Khung nhị phân = WAV từ TTS.
+      // binary frame = WAV audio from TTS
       if (event.data instanceof Blob) {
         const blobUrl = blobToAudioUrl(event.data)
         this.handlers.onAudio?.(blobUrl)
@@ -84,13 +84,13 @@ class WebSocketClient {
           case 'sentence':
             this.handlers.onSentence?.(data.text)
             break
-          // Backend đã chốt xong phiên (kể cả khi TTS lỗi) -> thoát trạng thái chờ.
+          // backend finished the session (even if TTS failed) -> exit the waiting state
           case 'done':
             this.hasPending = false
             this.handlers.onProcessing?.(false)
             this.handlers.onFinished?.({ noSign: false })
             break
-          // Hết phiên mà không ký hiệu nào đủ tin cậy -> không có câu, không có giọng nói.
+          // session ended with no confident sign -> no sentence, no audio
           case 'no_sign':
             this.hasPending = false
             this.handlers.onProcessing?.(false)
@@ -117,15 +117,12 @@ class WebSocketClient {
     }
   }
 
-  /**
-   * Gửi một frame keypoint. endSign=true để backend ghép câu + đọc.
-   * slgcnKeypoints (tuỳ chọn, 81 số) cho late-fusion SL-GCN; thiếu -> backend chạy SPOTER-only.
-   */
+  /** Sends one keypoint frame; endSign=true tells the backend to build the sentence and speak it. Optional slgcnKeypoints (81 numbers) enables SL-GCN late fusion; omit it to run SPOTER-only. */
   sendKeypoints(keypoints, slgcnKeypoints = null, endSign = false) {
     if (this.ws?.readyState !== WebSocket.OPEN) return
 
-    // Hold-last gửi lại cùng một mảng nhiều lần liên tiếp -> nhớ chuỗi JSON đã tạo thay vì
-    // serialize gần 200 số mỗi lần. So sánh tham chiếu là đủ: frame mới luôn là mảng mới.
+    // Hold-last resends the same array repeatedly -> cache the JSON string instead of
+    // re-serializing ~200 numbers each time. Reference equality is enough: new frames are new arrays.
     let payload
     if (!endSign && keypoints === this._lastKeypoints && slgcnKeypoints === this._lastSlgcn) {
       payload = this._lastPayload
@@ -144,37 +141,29 @@ class WebSocketClient {
     if (endSign) this.hasPending = false
   }
 
-  /**
-   * True khi có gloss mới và đã nghỉ tay đủ lâu (idleMs) -> nên chốt câu.
-   */
+  /** True when there's a pending gloss and hands have been idle for idleMs -> should finalize. */
   shouldFinalize(idleMs) {
     return this.hasPending && Date.now() - this.lastGlossAt >= idleMs
   }
 
-  /**
-   * Quên các gloss đang chờ chốt câu (phía client). Cần khi phiên kết thúc bất thường, nếu
-   * không lần sau vào tab realtime sẽ tự chốt câu ngay từ frame camera đầu tiên.
-   */
+  /** Clears client-side pending-gloss state; needed after an abnormal session end, or the next realtime session would finalize immediately on the first camera frame. */
   resetFinalizeState() {
     this.lastGlossAt = 0
     this.hasPending = false
   }
 
-  /**
-   * Mở lại kết nối để backend cấp SessionState mới (mỗi kết nối = một phiên độc lập).
-   * Dùng khi huỷ giữa chừng, tránh câu lần sau dính từ của lần chạy bị huỷ.
-   */
+  /** Reopens the connection so the backend issues a fresh SessionState (one per connection); used after a mid-run cancel so the next sentence doesn't inherit leftover words. */
   resetSession() {
     this.resetFinalizeState()
     const old = this.ws
     if (!old) return
     this.ws = null
-    // Gỡ onclose trước khi đóng, nếu không _handleReconnect sẽ hẹn kết nối lại sau 3s.
+    // clear onclose before closing, or _handleReconnect will schedule a reconnect in 3s
     old.onclose = null
     try {
       old.close()
     } catch {
-      // Socket đã đóng sẵn -> không sao.
+      // already closed -> fine
     }
     this.reconnectAttempts = 0
     this._open()

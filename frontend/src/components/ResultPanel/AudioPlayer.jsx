@@ -51,8 +51,8 @@ export default function AudioPlayer({ audioUrl }) {
     }
   }, [audioUrl])
 
-  // Áp tốc độ đọc đã chọn (nút x trong ResultPanel) vào playback; đổi src sẽ reset
-  // playbackRate về defaultPlaybackRate nên đặt cả hai, và chạy lại khi đổi audio.
+  // Apply the chosen speed (x button in ResultPanel); changing src resets playbackRate
+  // to defaultPlaybackRate, so set both here and rerun when audio changes.
   useEffect(() => {
     const audio = audioRef.current
     audio.defaultPlaybackRate = voiceSpeed

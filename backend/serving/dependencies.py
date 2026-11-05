@@ -1,4 +1,4 @@
-"""Singleton cho cac service. Khoi tao mot lan, load() goi trong lifespan (warmup)."""
+"""Service singletons, created once; load() runs during lifespan warmup."""
 
 from serving.config import settings
 from serving.services.gloss_decoder import GlossDecoder

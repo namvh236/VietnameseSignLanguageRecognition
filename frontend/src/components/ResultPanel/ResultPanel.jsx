@@ -11,7 +11,7 @@ const SOURCE_LABELS = {
 }
 
 export default function ResultPanel() {
-  // Hiển thị kết quả của NGUỒN đang mở (realtime/upload/record) — mỗi nguồn giữ KQ riêng.
+  // Shows the result for the active source (realtime/upload/record); each source keeps its own result.
   const activeSource = useSignStore(s => s.activeSource)
   const result = useSignStore(s => s.sources[s.activeSource])
   const clearSession = useSignStore(s => s.clearSession)
@@ -28,7 +28,6 @@ export default function ResultPanel() {
   return (
     <div className="flex flex-col h-full p-6 bg-white/70 dark:bg-slate-950/40 backdrop-blur-md border-t md:border-t-0 md:border-l border-slate-200 dark:border-slate-900 transition-colors duration-300">
       
-      {/* Panel Header */}
       <div className="flex items-center justify-between pb-6 border-b border-slate-200 dark:border-slate-900">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-500 dark:text-indigo-400">
@@ -57,7 +56,6 @@ export default function ResultPanel() {
 
 
 
-          {/* Voice Gender Toggle Button */}
           <button
             onClick={toggleVoiceGender}
             className="p-2.5 rounded-xl text-slate-500 hover:text-indigo-500 dark:text-slate-400 dark:hover:text-indigo-400 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-500/30 transition-all duration-200 shadow-sm"
@@ -66,7 +64,6 @@ export default function ResultPanel() {
             {voiceGender === 'woman' ? <Venus size={20} className="text-pink-500 dark:text-pink-400" /> : <Mars size={20} className="text-sky-500 dark:text-sky-400" />}
           </button>
 
-          {/* Voice Speed Cycle Button */}
           <button
             onClick={cycleVoiceSpeed}
             className="px-3 py-2.5 rounded-xl text-slate-500 hover:text-indigo-500 dark:text-slate-400 dark:hover:text-indigo-400 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-indigo-500/30 transition-all duration-200 flex items-center justify-center min-w-[54px] shadow-sm"
@@ -77,10 +74,8 @@ export default function ResultPanel() {
         </div>
       </div>
 
-      {/* Panel Body Content */}
       <div className="flex-1 flex flex-col justify-start py-6 gap-6 overflow-y-auto">
         
-        {/* Sign Language Glosses */}
         <section className="flex flex-col gap-2">
           <p className="text-sm font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Ký hiệu</p>
           <div className="p-3.5 rounded-2xl bg-slate-100/50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-900">
@@ -88,7 +83,7 @@ export default function ResultPanel() {
           </div>
         </section>
 
-        {/* Hết phiên mà không ký hiệu nào đủ tin cậy: nói rõ ra, đừng để panel trống trơn */}
+        {/* Session ended with no confident signs: say so explicitly instead of leaving the panel blank */}
         {noSign && glosses.length === 0 && (
           <div className="flex items-start gap-2.5 px-4 py-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400">
             <AlertTriangle size={16} className="shrink-0 mt-0.5" />
@@ -99,13 +94,11 @@ export default function ResultPanel() {
           </div>
         )}
 
-        {/* Full Translated Sentence */}
         <section className="flex flex-col gap-2">
           <p className="text-sm font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Bản dịch</p>
           <SentenceDisplay sentence={sentence} isProcessing={isProcessing} />
         </section>
 
-        {/* Translation History */}
         {history.length > 0 && (
           <section className="flex flex-col gap-2 border-t border-slate-100 dark:border-slate-900 pt-6">
             <p className="text-sm font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Lịch sử dịch</p>
@@ -120,7 +113,6 @@ export default function ResultPanel() {
         )}
       </div>
 
-      {/* TTS Audio Player */}
       {audioUrl && (
         <div className="mt-auto pt-6 border-t border-slate-200 dark:border-slate-900 flex flex-col gap-4">
           <AudioPlayer audioUrl={audioUrl} />

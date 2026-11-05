@@ -11,23 +11,10 @@ import {
   saveCachedResult,
 } from '../../services/resultCache'
 
-/**
- * Phát video đã tải lên và dịch ngay trong lúc phát: mỗi frame qua MediaPipe rồi đẩy keypoint
- * lên WebSocket — đúng đường camera realtime đang dùng. Kết quả hiện ở panel "Kết quả nhận
- * dạng" (nguồn 'upload').
- *
- * Không lật gương như khung camera: đó là hiệu ứng soi gương cho người ký, áp lên video có
- * sẵn thì hình bị ngược.
- */
+/** Plays an uploaded video and translates it live, same pipeline as the realtime camera (video -> MediaPipe -> WebSocket); results go to source 'upload'. Not mirrored like the camera view — that's only for signer self-view and would reverse pre-recorded footage. */
 
-/**
- * Chờ backend chốt phiên sau khi video đã hết: `end_sign` còn phải flush ký hiệu cuối -> LLM
- * -> TTS. Trả `wsSink` về 'realtime' quá sớm thì từ cuối, câu dịch và giọng nói rơi nhầm nguồn.
- *
- * Tín hiệu chính là `finishedAt` (backend gửi 'done' hoặc 'no_sign' — LUÔN gửi, kể cả khi
- * không nhận được ký hiệu nào hay TTS lỗi). `audioUrl`/`sentence` chỉ là lưới an toàn cho
- * backend bản cũ chưa có 'done'.
- */
+/** Waits for backend finalize after video ends (end_sign must still flush final sign -> LLM -> TTS);
+ * returning wsSink too early misroutes the last word/sentence/audio. Signal is finishedAt (always sent). */
 function waitForUploadFinalize(source, overallMs = 25000, graceAfterSentenceMs = 6000) {
   return new Promise((resolve) => {
     const startedFinishedAt = useSignStore.getState().sources[source].finishedAt
@@ -42,15 +29,15 @@ function waitForUploadFinalize(source, overallMs = 25000, graceAfterSentenceMs =
     const overall = setTimeout(done, overallMs)
     unsub = useSignStore.subscribe((s) => {
       const r = s.sources[source]
-      if (r.finishedAt !== startedFinishedAt) return done() // backend báo xong
-      if (r.audioUrl) return done() // có giọng nói = xong hẳn
-      // Có câu nhưng TTS lỗi/chậm -> chờ thêm một nhịp rồi thôi.
+      if (r.finishedAt !== startedFinishedAt) return done() // backend signaled done
+      if (r.audioUrl) return done() // audio present = fully done
+      // sentence present but no audio yet (TTS slow/failed) -> wait a bit more
       if (r.sentence && !graceTimer) graceTimer = setTimeout(done, graceAfterSentenceMs)
     })
   })
 }
 
-// Nhịp chờ giả lập trước khi hiện câu ở lượt phát lại (lượt chạy thật mất tầm này cho LLM+TTS).
+// Simulated delay before showing the sentence on replay (real runs take about this long for LLM+TTS).
 const REPLAY_FINALIZE_MS = 1200
 
 export default function UploadPlayer({ item, source = 'upload', autoStart = false }) {
@@ -64,7 +51,7 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState('')
   const [stats, setStats] = useState(null)
-  // Kết quả đã lưu của ĐÚNG file này (nếu từng xử lý, hoặc đã prebake bằng script).
+  // Cached result for this exact file (if processed before, or prebaked by script).
   const [cached, setCached] = useState(null)
 
   const showSkeleton = useSignStore(s => s.showSkeleton)
@@ -79,7 +66,7 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
   const wsStatus = useSignStore(s => s.wsStatus)
   const noSign = useSignStore(s => s.sources[source].noSign)
 
-  // Rời khỏi component giữa chừng -> báo vòng lặp dừng, trả WS về cho camera realtime.
+  // Unmounting mid-run -> stop the loop and hand WS back to the realtime camera.
   useEffect(() => {
     return () => {
       cancelRef.current = true
@@ -87,7 +74,7 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
     }
   }, [])
 
-  // Khoá cache tính xong (băm nội dung file) -> hỏi backend xem video này đã xử lý chưa.
+  // Once cache key (file hash) is ready, ask backend if this video was already processed.
   useEffect(() => {
     let alive = true
     if (!item.cacheKey) return setCached(null)
@@ -109,13 +96,8 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
     cancelRef.current = true
   }
 
-  /**
-   * Phát lại kết quả đã lưu: chỉ chạy video và nhả từng từ đúng mốc thời gian đã ghi, rồi hiện
-   * câu + giọng nói. KHÔNG chạm MediaPipe/WebSocket/ONNX/LLM/TTS -> tức thì và không thể lỗi.
-   *
-   * CỐ Ý KHÔNG để lộ ra UI: người xem thấy y như một lượt dịch thật (cùng nhãn "Đang dịch",
-   * cùng nhịp "đang ghép câu"), nên không có badge/nút riêng cho bản đã xử lý.
-   */
+  /** Replays a cached result: plays video, emits words at recorded timestamps, then shows sentence+audio.
+   * Skips MediaPipe/WebSocket/ONNX/LLM/TTS entirely. Deliberately indistinguishable in the UI from a live run. */
   const replayCached = async (entry) => {
     const video = videoRef.current
     if (!video || isRunning) return
@@ -163,11 +145,11 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
 
       if (cancelRef.current) return
 
-      // Video có thể ngắn hơn mốc cuối (mốc prebake là xấp xỉ) -> nhả nốt phần còn lại.
+      // Video may be shorter than the last timestamp (prebake marks are approximate) -> flush the rest.
       for (; next < timeline.length; next++) addGloss(source, timeline[next].text)
 
       setProgress(1)
-      // Lượt chạy thật mất vài giây cho LLM+TTS; hiện câu ngay lập tức trông rất khác.
+      // Real runs take a few seconds for LLM+TTS; showing the sentence instantly would look off.
       setPhase('finalizing')
       await new Promise(r => setTimeout(r, REPLAY_FINALIZE_MS))
       setSentence(source, entry.sentence)
@@ -194,12 +176,12 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
     setProgress(0)
     setStats(null)
 
-    // Xoá kết quả lượt trước nhưng giữ lịch sử các câu đã dịch.
+    // Clear previous run's result but keep translated sentence history.
     startNewRun(source)
     setActiveSource(source)
     setWsSink(source)
 
-    // Ghi mốc thời gian mỗi từ xuất hiện, để lần sau phát lại giống y như chạy thật.
+    // Record each word's timestamp so a later replay matches the live run.
     const timeline = []
     const unsubTimeline = useSignStore.subscribe((next, prev) => {
       const cur = next.sources[source].glosses
@@ -212,7 +194,7 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
     try {
       const outcome = await streamVideoThroughWs(video, {
         onResults: handleResults,
-        // Video vừa quay (webm) có duration = Infinity -> lấy độ dài đo được lúc quay.
+        // Freshly recorded webm has duration = Infinity -> use the measured recording length.
         onProgress: (cur, total) => {
           const dur = Number.isFinite(total) && total > 0 ? total : item.duration
           setProgress(dur > 0 ? Math.min(cur / dur, 1) : 0)
@@ -223,11 +205,11 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
       })
 
       if (outcome === 'cancelled') {
-        // Backend vẫn giữ gloss của lần chạy dở -> mở lại kết nối để lấy phiên mới.
+        // Backend still holds glosses from the aborted run -> reset the connection for a fresh session.
         wsClient.resetSession()
       } else {
         setProgress(1)
-        // Giữ đích nhận cho tới khi backend gửi nốt từ cuối + câu + giọng nói.
+        // Keep WS sink here until backend sends the final word + sentence + audio.
         setPhase('finalizing')
         await waitForUploadFinalize(source)
         await persistRun(timeline, video)
@@ -244,11 +226,11 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
     }
   }
 
-  /** Lưu kết quả lượt vừa chạy vào cache (lỗi ở đây không ảnh hưởng kết quả đang hiển thị). */
+  /** Saves the just-finished run to cache; errors here don't affect the displayed result. */
   const persistRun = async (timeline, video) => {
     if (!item.cacheKey || timeline.length === 0) return
     const result = useSignStore.getState().sources[source]
-    if (!result.sentence) return // không có câu thì cache cũng vô nghĩa
+    if (!result.sentence) return // no sentence means nothing worth caching
     const duration = Number.isFinite(video.duration) && video.duration > 0
       ? video.duration
       : item.duration || null
@@ -271,7 +253,7 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
     }
   }
 
-  // Clip tự quay: dịch luôn khi vừa quay xong, không phải bấm thêm.
+  // Recorded clip: translate immediately, no extra button press needed.
   useEffect(() => {
     if (!autoStart || autoStartedRef.current) return
     if (cached) {
@@ -287,7 +269,6 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
 
   return (
     <div className="flex-1 min-h-0 flex flex-col rounded-2xl border border-slate-200 dark:border-slate-900 bg-white/40 dark:bg-slate-950/25 overflow-hidden">
-      {/* Khung hình chiếm toàn bộ chỗ còn lại */}
       <div className="relative flex-1 min-h-0 bg-slate-950 flex items-center justify-center">
         <video
           ref={videoRef}
@@ -305,7 +286,7 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
           />
         )}
 
-        {/* Video đứng yên tới khi MediaPipe tải xong model. */}
+        {/* Video stays paused until MediaPipe finishes loading */}
         {phase === 'warmup' && (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-slate-950/70 backdrop-blur-sm">
             <Loader2 size={28} className="animate-spin text-indigo-400" />
@@ -324,7 +305,7 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
           </div>
         )}
 
-        {/* Dưới ~6.5 fps backend nuốt ký hiệu mà không báo lỗi -> phải nói ra. */}
+        {/* Below ~6.5fps the backend silently drops signs -> warn the user */}
         {phase === 'playing' && stats?.degraded && (
           <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5 bg-amber-500/90 text-white backdrop-blur-md px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-wider">
             <AlertTriangle size={12} />
@@ -340,7 +321,6 @@ export default function UploadPlayer({ item, source = 'upload', autoStart = fals
         </div>
       </div>
 
-      {/* Thanh điều khiển */}
       <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-2.5 border-t border-slate-200 dark:border-slate-900">
         <p className="text-[11px] text-slate-500 dark:text-slate-400 min-w-0 truncate">
           {error ? (

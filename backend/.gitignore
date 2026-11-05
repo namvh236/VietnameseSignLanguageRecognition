@@ -5,9 +5,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Trong so model khong commit; lay tu recognition/ khi chay.
+# Model weights aren't committed; fetched from recognition/ at runtime.
 weights/*
 !weights/.gitkeep
 
-# Cache ket qua dich theo file video (prebake demo)
+# Cache of per-video translation results (demo prebake).
 cache/

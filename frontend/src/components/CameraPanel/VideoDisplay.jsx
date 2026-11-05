@@ -5,8 +5,8 @@ import { extractKeypoints, extractSlgcnKeypoints } from '../../utils/keypoints'
 import { getHolistic, isHolisticReady, setResultsHandler } from '../../services/holistic'
 import { drawSkeleton } from '../../utils/drawSkeleton'
 
-// Instance do services/holistic.js quản lý (dùng chung với trình phát video upload);
-// ở đây chỉ giữ tham chiếu cho vòng lặp.
+// Singleton managed by services/holistic.js, shared with the upload player;
+// only a reference is kept here for the render loop.
 let globalHolistic = null
 
 export default function VideoDisplay({ videoRef, error, onKeypoints }) {
@@ -18,7 +18,7 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
 
   const [isModelLoading, setIsModelLoading] = useState(false)
 
-  // 1. Nạp sẵn MediaPipe Holistic (singleton dùng chung) ngay khi bật camera.
+  // 1. Preload the shared MediaPipe Holistic singleton once the camera turns on.
   useEffect(() => {
     if (!isCameraOn || isHolisticReady()) return
 
@@ -40,8 +40,8 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
     }
   }, [isCameraOn])
 
-  // 2. Chạy Holistic liên tục khi camera bật: trích + gửi keypoint mỗi frame,
-  //    vẽ khung xương chỉ khi được bật.
+  // 2. While camera is on: extract+send keypoints every frame,
+  //    draw skeleton only when enabled.
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -49,21 +49,21 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
     let active = true
     let lastSend = 0
     let sending = false
-    // ~25 fps: 70 frame buffer của backend ~ 2.8s, xấp xỉ độ dài một ký hiệu.
+    // ~25fps: backend's 70-frame buffer is ~2.8s, roughly one sign's duration.
     const SEND_INTERVAL_MS = 40
 
-    // Luôn lấy lại, không cache: luồng video có thể đã dựng instance mới sau khi mất ngữ
-    // cảnh WebGL, giữ tham chiếu cũ là dùng đồ đã hỏng.
+    // Always refetch, don't cache: video stream may rebuild the instance after
+    // losing WebGL context; a stale reference would be broken.
     getHolistic().then((i) => { globalHolistic = i }).catch(() => {})
 
     setResultsHandler((results) => {
       if (!active) return
 
-      // Gửi keypoint cho backend (độc lập với việc vẽ khung xương).
+      // Send keypoints to backend independently of skeleton drawing.
       const w = video.videoWidth
       const h = video.videoHeight
       if (w && h && onKeypoints) {
-        // Gửi CẢ keypoint SPOTER (108) và SL-GCN (81) cho late-fusion phía backend.
+        // Send BOTH SPOTER (108) and SL-GCN (81) keypoints for backend late-fusion.
         onKeypoints(extractKeypoints(results, w, h), extractSlgcnKeypoints(results, w, h))
       }
 
@@ -81,7 +81,7 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
         try {
           await globalHolistic.send({ image: video })
         } catch {
-          // Bỏ qua cảnh báo frame bị skip
+          // Ignore skipped-frame errors
         }
         sending = false
       }
@@ -92,7 +92,7 @@ export default function VideoDisplay({ videoRef, error, onKeypoints }) {
 
     return () => {
       active = false
-      setResultsHandler(null) // nhả quyền nhận kết quả cho trình phát video upload
+      setResultsHandler(null) // release results handler back to upload player
     }
   }, [showSkeleton, isCameraOn, videoRef, onKeypoints])
 

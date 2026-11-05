@@ -1,6 +1,5 @@
-"""Ghep gloss -> cau tieng Viet qua Qwen3 (Ollama /api/chat).
-
-Prompt + /no_think + strip <think> lay tu recognition/demo_gradio.py (da kiem chung).
+"""Joins glosses into a Vietnamese sentence via Qwen3 (Ollama /api/chat); prompt +
+/no_think + <think>-stripping ported from demo_gradio.py.
 """
 
 import re
@@ -13,8 +12,8 @@ from serving.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# LUU Y: noi dung prompt PHAI viet tieng Viet CO DAU — model doc prompt khong dau
-# se sinh cau kem han. (Chi comment trong code moi viet khong dau.)
+# NOTE: prompt text must keep Vietnamese diacritics -- an unaccented prompt makes the
+# model produce worse sentences. (Only code comments go unaccented.)
 SYSTEM_PROMPT = (
     "Bạn là trợ lý dịch ngôn ngữ ký hiệu tiếng Việt. Đầu vào là danh sách các từ (gloss) "
     "nhận dạng được từ người ký hiệu, theo đúng thứ tự thể hiện. Ngôn ngữ ký hiệu lược bỏ "
@@ -46,20 +45,20 @@ SYSTEM_PROMPT = (
     "Chỉ trả về câu kết quả, không giải thích, không dùng thẻ <think> hay định dạng đặc biệt."
 )
 
-# Ollama co the cold-start nap model lan dau lau hon timeout thuong.
+# Ollama's first-time model load (cold start) can take longer than the usual timeout.
 WARMUP_TIMEOUT = 120.0
 
 _THINK_RE = re.compile(r"<think>.*?</think>", flags=re.DOTALL)
 _THINK_TAG_RE = re.compile(r"</?think>")
-# Qwen3 doi khi lam lo token dieu khien /think, /no_think ra output duoi dang van ban.
+# Qwen3 sometimes leaks the /think, /no_think control tokens into the output text.
 _CONTROL_TOKEN_RE = re.compile(r"\s*/(?:no_)?think\b")
-# Dong chi chua "nhan" (label) model hay chen truoc cau: "Ban dich", "Cau", "Ket qua"...
+# A line that's just a model-inserted label before the sentence (e.g. "bản dịch").
 _LABEL_ONLY_LINE_RE = re.compile(
     r"^(?:bản dịch|câu(?:\s+dịch|\s+trả lời)?|kết quả|đáp án|trả lời|output|answer)"
     r"\s*[:：.\-–]*\s*$",
     flags=re.IGNORECASE,
 )
-# Tien to nhan o dau dong, chi bo khi co dau hai cham (tin hieu chac chan la nhan).
+# Label prefix at line start; stripped only with a trailing colon (a reliable signal).
 _LABEL_PREFIX_RE = re.compile(
     r"^\s*(?:bản dịch|câu(?:\s+dịch|\s+trả lời)?|kết quả|đáp án|trả lời|output|answer)"
     r"\s*[:：]\s*",
@@ -68,7 +67,7 @@ _LABEL_PREFIX_RE = re.compile(
 
 
 def _strip_think(text: str) -> str:
-    """Lam sach output LLM: bo khoi/tag suy nghi, token dieu khien va dong nhan thua."""
+    """Cleans LLM output: strips think blocks/tags, control tokens, stray labels."""
     text = _THINK_RE.sub("", text)
     text = _THINK_TAG_RE.sub("", text)
     text = _CONTROL_TOKEN_RE.sub("", text)
@@ -102,16 +101,16 @@ class LLMService:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    # Tieng Viet CO DAU (xem ghi chu o SYSTEM_PROMPT) — cau user truoc day
-                    # viet khong dau, lam lech phan phoi so voi system prompt co dau.
+                    # Keep diacritics (see SYSTEM_PROMPT note): unaccented text here
+                    # would skew the distribution vs. the accented system prompt.
                     "content": f"Các từ nhận dạng được: {', '.join(gloss_sequence)} /no_think",
                 },
             ],
-            # Tat reasoning ngay tu API (nhanh nhat + tranh lo <think>); /no_think trong
-            # prompt giu lai lam du phong cho ban Ollama cu chua ho tro "think".
+            # Disable reasoning at the API level (avoids <think> leaking); /no_think
+            # in the prompt is a fallback for older Ollama builds without "think".
             "think": False,
             "options": {
-                # Thap de output on dinh (day la tac vu ghep cau co rang buoc, khong can sang tao).
+                # Low temperature for stable output (constrained task, not creative).
                 "temperature": 0.15,
                 "num_predict": settings.ollama_num_predict,
             },
@@ -125,7 +124,7 @@ class LLMService:
         return sentence or " ".join(gloss_sequence)
 
     async def ping(self) -> None:
-        """Nong may (co the cold-start lau) de request that sau do khong bi timeout."""
+        """Warms the model (cold start can be slow) so requests don't time out."""
         await self.gloss_to_sentence(["xin chao"], timeout=WARMUP_TIMEOUT)
 
     async def close(self) -> None:

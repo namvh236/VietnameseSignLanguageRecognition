@@ -1,4 +1,4 @@
-"""Diem khoi dong FastAPI: lifespan (warmup), mount router, CORS."""
+"""FastAPI entrypoint: lifespan warmup, router mounting, CORS."""
 
 from contextlib import asynccontextmanager
 

@@ -1,17 +1,4 @@
-"""Do do chinh xac segmentation (KeypointSegmenter THAT) tren bo video da ghep san.
-
-Chay MediaPipe Holistic that (cung tham so voi frontend, xem services/holistic.js) tren tung
-frame cua moi video trong segmentation_eval_video/videos/, trich keypoint SPOTER 54-khop dung
-HET contract cua serving (xem models/schemas.py + utils/keypoints.js), roi nap tuan tu vao
-KeypointSegmenter that (serving/services/segmenter.py) -- CHINH XAC nhu WS handler
-(serving/routers/websocket.py) dang dung. Xuat predictions.json de so khop voi manifest.json
-(ground-truth) o phia danh gia (IoU/F1, khong lam o day).
-
-Dung (tu backend/):
-    uv run python scripts/eval_segmentation.py segmentation_eval_video --out predictions.json
-    uv run python scripts/eval_segmentation.py segmentation_eval_video --out predictions_sweep1.json \
-        --seg-min-down-frames 8
-"""
+"""Run the real KeypointSegmenter over eval videos and dump segment predictions to JSON."""
 
 import argparse
 import json
@@ -30,14 +17,14 @@ from serving.utils.logger import get_logger  # noqa: E402
 
 logger = get_logger("eval_segmentation")
 
-# ===== Trich keypoint SPOTER 54-khop, PORT 1:1 tu frontend/src/utils/keypoints.js =====
-# Chi so landmark MediaPipe Pose theo thu tu than cua JointSelect (None = neck synthesize 0).
+# SPOTER 54-keypoint order; must mirror frontend/src/utils/keypoints.js.
+# None = synthesized neck (MediaPipe does not provide one).
 POSE_MAP = [0, None, 5, 2, 8, 7, 12, 11, 14, 13, 16, 15]
-# Chi so landmark MediaPipe Hand theo thu tu tay cua JointSelect (dung cho ca 2 tay).
+# MediaPipe Hand landmark indices in JointSelect order (shared by both hands).
 HAND_MAP = [0, 8, 7, 6, 5, 12, 11, 10, 9, 16, 15, 14, 13, 19, 20, 18, 17, 4, 3, 2, 1]
 
-# Tham so Holistic PHAI khop voi frontend/src/services/holistic.js de cung phan bo keypoint
-# ma cac nguong segmentation da duoc chot theo.
+# Holistic params must match frontend/src/services/holistic.js
+# (thresholds are tuned to this landmark layout).
 HOLISTIC_OPTIONS = dict(
     static_image_mode=False,
     model_complexity=1,

@@ -1,8 +1,5 @@
-"""Nhan dang tu FILE video (upload/quay) + ghep cau & doc.
-
-- POST /api/recognize-video: MOT file video -> danh sach tu (gloss). Khong LLM/TTS.
-- POST /api/compose: danh sach tu -> cau tieng Viet (LLM) + giong noi (TTS, WAV base64).
-"""
+"""Video-file recognition + sentence composition. POST /api/recognize-video: video ->
+word list (no LLM/TTS). POST /api/compose: word list -> sentence (LLM) + voice (TTS)."""
 
 import base64
 import os
@@ -22,7 +19,7 @@ logger = get_logger(__name__)
 
 @router.post("/recognize-video", response_model=VideoRecognizeResponse)
 async def recognize_video(file: UploadFile = File(...)):
-    """MOT file video -> danh sach tu nhan dang (tu dong tach nhieu ky hieu)."""
+    """One video file -> recognized word list (auto-segments multiple signs)."""
     if not (file.content_type or "").startswith("video/"):
         raise HTTPException(status_code=415, detail="Chi chap nhan file video (video/*).")
 
@@ -33,7 +30,7 @@ async def recognize_video(file: UploadFile = File(...)):
             status_code=413, detail=f"File vuot qua {settings.max_upload_mb}MB."
         )
 
-    # cv2/ffmpeg chon demuxer theo duoi file -> giu nguyen duoi cua file goc.
+    # cv2/ffmpeg pick a demuxer by file extension -> keep the original suffix.
     suffix = os.path.splitext(file.filename or "")[1] or ".mp4"
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     try:
@@ -41,7 +38,7 @@ async def recognize_video(file: UploadFile = File(...)):
         tmp.flush()
         tmp.close()
         glosses = await get_video_recognizer().recognize(tmp.name)
-    except ValueError as exc:  # video hong / khong doc duoc frame
+    except ValueError as exc:  # corrupt video / no readable frames
         raise HTTPException(status_code=422, detail=str(exc))
     finally:
         try:
@@ -54,7 +51,7 @@ async def recognize_video(file: UploadFile = File(...)):
 
 @router.post("/compose", response_model=ComposeResponse)
 async def compose(req: ComposeRequest):
-    """Danh sach tu -> cau tieng Viet (LLM) + giong noi (TTS). Bat loi an toan tung buoc."""
+    """Word list -> Vietnamese sentence (LLM) + voice (TTS); each step fails safely."""
     try:
         sentence = await get_llm().gloss_to_sentence(req.glosses)
     except Exception as exc:  # noqa: BLE001

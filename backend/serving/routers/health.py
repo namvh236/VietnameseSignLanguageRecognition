@@ -1,7 +1,5 @@
-"""GET /health -- trang thai gon: status + provider + cac model.
-
-`status` chi "ok" khi ca SPOTER, TTS da nap va Ollama co san model.
-"""
+"""GET /health -- compact status: status + provider + loaded models. `status` is
+"ok" only when SPOTER and TTS are loaded and Ollama has the model."""
 
 import httpx
 from fastapi import APIRouter

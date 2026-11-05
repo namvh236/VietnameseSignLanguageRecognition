@@ -1,9 +1,4 @@
-"""Diem noi duy nhat toi AI core (src/).
-
-Chuc nang:
-    - Them src/ (goc du an) vao sys.path.
-    - Tai cung cap cac lop transform tien xu ly SPOTER.
-"""
+"""Bridge into the AI core (src/): adds src/ to sys.path, loads SPOTER transforms."""
 
 import sys
 
@@ -23,12 +18,7 @@ def _bootstrap() -> None:
 
 
 def load_transforms():
-    """Tra ve chuoi transform chuan hoa keypoint (khong gom PoseExtract/JointSelect).
-
-    Client da chay MediaPipe Holistic + chon khop, nen chi con buoc chuan hoa:
-        TensorToDict -> SingleBodyDictNormalize -> SPOTERSingleHandDictNormalize
-        -> DictToTensor -> Shift -> Pad(seq_len)
-    """
+    """Keypoint normalization only (client already ran Holistic + joint selection)."""
     _bootstrap()
     from torchvision.transforms.v2 import Compose
 
@@ -54,12 +44,9 @@ def load_transforms():
 
 
 def load_pose_extract():
-    """Tra ve PoseExtract (MediaPipe Holistic): dict {frames, fps, width, height} -> Pose.
-
-    Dung cho luong VIDEO-FILE (late-fusion): trich Pose MOT lan / segment roi chia cho ca
-    hai nhanh SPOTER + SL-GCN (giong demo_gradio.py). Luong realtime KHONG dung (client da
-    chay Holistic san, chi gui keypoint).
-    """
+    """PoseExtract (MediaPipe Holistic): dict -> Pose. Video-file flow only (one
+    extraction per segment, shared by SPOTER and SL-GCN); realtime doesn't use this
+    since the client already runs Holistic and sends keypoints."""
     _bootstrap()
     from pipelines.spoter_graph_classification import PoseExtract
 
@@ -67,12 +54,7 @@ def load_pose_extract():
 
 
 def load_spoter_graph_transforms():
-    """Nhanh SPOTER cho luong video: Pose -> tensor (spoter_seq_len, 54, 2).
-
-    Nhu load_video_transforms() cu NHUNG BO PoseExtract (da tach ra chay 1 lan / segment):
-        JointSelect -> TensorToDict -> SingleBodyDictNormalize -> SPOTERSingleHandDictNormalize
-        -> DictToTensor -> Shift -> Pad(spoter_seq_len)
-    """
+    """SPOTER branch for the video flow: Pose -> tensor (spoter_seq_len, 54, 2)."""
     _bootstrap()
     from torchvision.transforms.v2 import Compose
 
@@ -100,12 +82,9 @@ def load_spoter_graph_transforms():
 
 
 def load_slgcn_transforms():
-    """Nhanh SL-GCN cho luong video: Pose -> mang (3, slgcn_seq_len, num_points, 1).
-
-    Copy nguyen 2 lop SLGCNJointSelect + SLGCNPad tu src/features/transforms/sl_gcn.py,
-    CO TINH bo import `_build_edges` (bone/motion/normalize da bake trong do thi ONNX nen
-    khong can). Dung chuoi da kiem chung trong demo_gradio.py.
-    """
+    """SL-GCN branch for the video flow: Pose -> array (3, T, num_points, 1). Copies
+    SLGCNJointSelect/SLGCNPad from src/features/transforms/sl_gcn.py, omitting
+    _build_edges since bone/motion/normalize are already baked into the ONNX graph."""
     _bootstrap()
 
     import numpy as np
@@ -115,7 +94,7 @@ def load_slgcn_transforms():
     from utils import COCO_TO_POSE_FORMAT, SLGCN_JOINTS
 
     class SLGCNJointSelect:
-        """Chon num_points joint cho SL-GCN, moi joint gom (x, y, confidence)."""
+        """Selects num_points joints for SL-GCN; each joint is (x, y, confidence)."""
 
         def __init__(self, num_points: int) -> None:
             self.joints = SLGCN_JOINTS[num_points]
@@ -138,7 +117,7 @@ def load_slgcn_transforms():
             return np.array(data).transpose((1, 0, 2))
 
     class SLGCNPad:
-        """Pad/cat ve num_frames roi doi truc -> (C, T, V, M) cho ONNX SL-GCN."""
+        """Pads/crops to num_frames, then transposes to (C, T, V, M) for ONNX SL-GCN."""
 
         def __init__(self, num_frames: int) -> None:
             self.num_frames = num_frames

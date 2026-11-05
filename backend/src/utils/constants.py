@@ -2,7 +2,7 @@ import numpy as np
 
 
 SLGCN_JOINTS = {
-    59: np.concatenate((np.arange(0, 17), np.arange(91, 133)), axis=0),  # 59
+    59: np.concatenate((np.arange(0, 17), np.arange(91, 133)), axis=0),
     31: np.concatenate(
         (
             np.arange(0, 11),
@@ -10,7 +10,7 @@ SLGCN_JOINTS = {
             [112, 116, 117, 120, 121, 124, 125, 128, 129, 132],
         ),
         axis=0,
-    ),  # 31
+    ),
     27: np.concatenate(
         (
             [0, 5, 6, 7, 8, 9, 10],
@@ -18,7 +18,7 @@ SLGCN_JOINTS = {
             [112, 116, 117, 120, 121, 124, 125, 128, 129, 132],
         ),
         axis=0,
-    ),  # 27
+    ),
 }
 
 COCO_TO_POSE_FORMAT = {

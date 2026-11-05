@@ -1,17 +1,6 @@
-"""Cache ket qua dich theo TUNG FILE video (an toan cho demo).
-
-Van de: moi lan tai lai cung mot video, ca duong ong (MediaPipe -> ONNX -> LLM -> TTS) phai
-chay lai tu dau — cham va co the loi ngay tren san khau. Cache nay luu ket qua da chay dung
-cua mot video, khoa theo NOI DUNG file (sha256 do client tinh), nen tai lai video cu la phat
-lai ket qua cu tuc thi.
-
-Layout (git-untracked):
-    cache/results/<key>.json   {glosses: [{text, at}], sentence, duration, source, saved_at}
-    cache/results/<key>.wav    WAV cua TTS (khong co neu luc luu TTS loi)
-
-Key den tu client -> PHAI kiem tra dinh dang truoc khi ghep vao duong dan (chong path
-traversal). Chi cho phep hex.
-"""
+"""Per-video-file result cache keyed by content hash (sha256): skips re-running
+MediaPipe/ONNX/LLM/TTS when a video replays. Keys are validated as hex before touching
+the filesystem; layout is cache/results/<key>.{json,wav} (git-untracked)."""
 
 import json
 import re
@@ -22,8 +11,8 @@ from serving.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Client uu tien sha256 (64 hex); moi truong khong co crypto.subtle (http tren LAN) lui ve
-# khoa ngan hon tu ten+kich thuoc+thoi diem sua file.
+# Clients prefer sha256 (64 hex); environments without crypto.subtle (http on LAN) fall
+# back to a shorter key derived from filename + size + mtime.
 KEY_RE = re.compile(r"^[0-9a-f]{16,64}$")
 
 
@@ -46,7 +35,7 @@ class ResultCache:
         return self.root / f"{key}.wav"
 
     def get(self, key: str) -> dict | None:
-        """Ket qua da luu (kem wav_bytes neu co), None neu chua tung xu ly."""
+        """Saved result (with wav_bytes if present), or None if never processed."""
         path = self._json_path(key)
         if not path.is_file():
             return None
@@ -68,16 +57,16 @@ class ResultCache:
         wav_bytes: bytes | None = None,
         source: str = "live",
     ) -> None:
-        """Ghi de ket qua cho video nay (chay lai = cap nhat cache)."""
+        """Overwrites the saved result for this video (rerun = cache refresh)."""
         self.root.mkdir(parents=True, exist_ok=True)
         entry = {
             "glosses": glosses,
             "sentence": sentence,
             "duration": duration,
-            "source": source,  # 'live' (chay that tren web) | 'prebake' (script chuan bi truoc)
+            "source": source,  # 'live' (web run) | 'prebake' (pre-run by a script)
             "saved_at": time.time(),
         }
-        # Ghi tam roi doi ten: tranh de lai file JSON do dang neu tien trinh chet giua chung.
+        # Write-then-rename avoids a half-written JSON if the process dies mid-write.
         tmp = self._json_path(key).with_suffix(".json.tmp")
         tmp.write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self._json_path(key))
@@ -86,5 +75,5 @@ class ResultCache:
         if wav_bytes:
             wav.write_bytes(wav_bytes)
         elif wav.is_file():
-            wav.unlink()  # lan chay moi khong co giong noi -> bo wav cu cho khoi lech cau
+            wav.unlink()  # no voice this run -> drop the stale wav so it won't mismatch
         logger.info("Da luu cache %s (%d tu, source=%s).", key, len(glosses), source)

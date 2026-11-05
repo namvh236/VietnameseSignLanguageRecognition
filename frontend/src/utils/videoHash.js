@@ -1,13 +1,8 @@
 /**
- * Khoá cache của một file video = SHA-256 nội dung file (khớp với hashlib.sha256 phía Python,
- * nên script prebake và web dùng chung khoá). Đổi tên file không đổi khoá.
- *
- * crypto.subtle chỉ có trong ngữ cảnh bảo mật (https hoặc localhost). Demo chạy qua IP LAN
- * bằng http thì không có -> lui về khoá yếu hơn từ (tên + kích thước + thời điểm sửa). Khoá
- * yếu này KHÔNG khớp với script prebake, nhưng vẫn dùng lại được kết quả đã chạy trên máy đó.
+ * Cache key = SHA-256 of file bytes, matching Python's hashlib.sha256 (shared with the prebake script); falls back to a weak name+size+mtime hash without crypto.subtle (e.g. LAN http).
  */
 
-/** Băm chuỗi -> 64 ký tự hex (FNV-1a bốn vòng với hằng số khác nhau). */
+/** Hashes a string to a 64-char hex string (four-round FNV-1a with different seeds). */
 function weakHex(text) {
   const seeds = [0x811c9dc5, 0x01000193, 0x9e3779b9, 0x7feb352d]
   return seeds

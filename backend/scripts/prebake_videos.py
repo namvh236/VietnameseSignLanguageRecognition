@@ -1,20 +1,4 @@
-"""Xu ly TRUOC mot loat video de demo phat lai tuc thi.
-
-Vi sao: tren san khau, tai mot video len roi cho ca duong ong (MediaPipe -> ONNX -> LLM ->
-TTS) chay lai tu dau vua cham vua co the loi. Script nay chay san cac video demo va luu ket
-qua vao cache (khoa theo sha256 NOI DUNG file). Khi tai chinh file do len web, frontend hoi
-GET /api/cache/<sha256> thay ngay ket qua va phat lai, khong chay mo hinh nua.
-
-Dung:
-    cd backend
-    uv run python scripts/prebake_videos.py demo/*.mp4
-    uv run python scripts/prebake_videos.py demo/ --force        # ep chay lai
-    uv run python scripts/prebake_videos.py demo/ --no-tts       # bo giong noi (nhanh hon)
-    uv run python scripts/prebake_videos.py --list               # xem cache dang co gi
-
-Luu y: khong can bat server. Duong nhan dang la duong VIDEO-FILE (late-fusion SPOTER+SL-GCN),
-CHINH XAC HON duong realtime, nen ket qua prebake thuong tot hon chay live tren web.
-"""
+"""Pre-process demo videos into the result cache (keyed by file sha256) for instant replay."""
 
 import argparse
 import asyncio
@@ -24,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-# Cho phep chay truc tiep bang `python scripts/prebake_videos.py` (goc du an = backend/).
+# Allow running directly via `python scripts/prebake_videos.py` (root = backend/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2  # noqa: E402
@@ -47,7 +31,7 @@ VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".m4v"}
 
 
 def sha256_file(path: Path) -> str:
-    """Cung thuat toan client dung (crypto.subtle SHA-256 tren noi dung file)."""
+    """Same algorithm as the client (crypto.subtle SHA-256 of file contents)."""
     digest = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -64,11 +48,8 @@ def video_duration(path: Path) -> float | None:
 
 
 def spread_glosses(glosses: list[str], duration: float | None) -> list[dict]:
-    """Rai tu deu theo do dai video de luc phat lai chung hien dan nhu chay that.
-
-    Duong video-file khong tra ve moc thoi gian tung doan, nen day chi la xap xi (tu thu i
-    hien o (i+1)/(n+1) do dai). Ket qua luu tu mot lan chay THAT tren web co moc that.
-    """
+    """Spread words evenly over duration; video-file path has no real per-segment
+    timestamps (approximate until overwritten by a live run)."""
     if not glosses:
         return []
     if not duration or duration <= 0:
@@ -112,10 +93,8 @@ def list_cache() -> None:
 
 
 async def set_sentence(path: Path, sentence: str, with_tts: bool) -> bool:
-    """Ghi de CAU cho mot video (giu nguyen tu + moc thoi gian da nhan dang), tao lai giong noi.
-
-    Dung khi LLM ghep sai tren clip dai va can chot ket qua dung cho buoi demo.
-    """
+    """Overwrite the sentence for one video (keeps recognized words/timestamps) and
+    re-synthesizes speech; use when the LLM mis-joined a long clip."""
     cache = get_result_cache()
     key = sha256_file(path)
     entry = cache.get(key)
@@ -208,7 +187,7 @@ async def main() -> int:
     if args.sentence and len(videos) != 1:
         parser.error("--sentence chi ap dung cho DUNG MOT video.")
 
-    # Nap dung nhung gi can (khong qua warmup_all de khoi nap thu vo ich).
+    # Load only what is needed (skip warmup_all to avoid loading unused models).
     get_gloss_decoder().load()
     get_spoter().load()
     try:
@@ -236,8 +215,8 @@ async def main() -> int:
 
 if __name__ == "__main__":
     code = asyncio.run(main())
-    # MediaPipe/TFLite doi khi segfault luc interpreter thoat (sau khi da lam xong viec) ->
-    # ma thoat rac. Thoat thang de exit code phan anh dung ket qua chay.
+    # MediaPipe/TFLite can segfault on interpreter exit after work is done; os._exit
+    # avoids that so the exit code reflects the real result.
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(code)

@@ -5,15 +5,15 @@ import VideoDisplay from './VideoDisplay'
 import ManualPanel from '../ManualPanel/ManualPanel'
 import wsClient from '../../services/ws'
 
-const IDLE_FINALIZE_MS = 2500 // Nghỉ tay 2.5s -> tự động ghép câu + đọc
+const IDLE_FINALIZE_MS = 2500 // idle 2.5s -> auto-finalize sentence + speak it
 
 export default function CameraPanel({ activeTab }) {
   const videoRef = useRef(null)
   const isCameraOn = useSignStore(s => s.isCameraOn)
   const { error } = useCamera(videoRef, isCameraOn)
 
-  // MediaPipe Holistic (trong VideoDisplay) gọi lại mỗi frame với keypoint đã trích
-  // (SPOTER 108 số + SL-GCN 81 số cho late-fusion).
+  // MediaPipe Holistic (in VideoDisplay) calls back every frame with extracted keypoints
+  // (SPOTER 108 values + SL-GCN 81 values for late-fusion).
   const handleKeypoints = useCallback((keypoints, slgcnKeypoints) => {
     wsClient.sendKeypoints(keypoints, slgcnKeypoints)
     if (wsClient.shouldFinalize(IDLE_FINALIZE_MS)) {
@@ -23,7 +23,7 @@ export default function CameraPanel({ activeTab }) {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Dynamic Content: Realtime video display or Manual Upload panel */}
+      {/* Realtime video display or Manual Upload panel */}
       {activeTab === 'manual' ? (
         <ManualPanel />
       ) : (

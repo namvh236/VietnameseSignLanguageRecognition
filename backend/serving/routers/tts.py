@@ -1,4 +1,4 @@
-"""POST /api/tts -- tra ve WAV bytes (fallback neu client muon TTS doc lap)."""
+"""POST /api/tts -- returns WAV bytes (fallback for standalone TTS clients)."""
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response

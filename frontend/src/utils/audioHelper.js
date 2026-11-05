@@ -1,9 +1,6 @@
 const _urls = new Set()
 
-/**
- * Converts base64 audio string (from WS message audio_b64) to a blob URL.
- * This Blob URL can be assigned directly to an <audio> element.
- */
+/** Converts a base64 audio string (from WS audio_b64) to a blob URL. */
 export const base64ToAudioUrl = (base64, mimeType = 'audio/wav') => {
   const binaryString = atob(base64)
   const len = binaryString.length
@@ -17,9 +14,7 @@ export const base64ToAudioUrl = (base64, mimeType = 'audio/wav') => {
   return url
 }
 
-/**
- * Tạo blob URL từ khung nhị phân WAV (backend gửi qua WebSocket).
- */
+/** Creates a blob URL from a binary WAV frame sent by the backend over WebSocket. */
 export const blobToAudioUrl = (blob) => {
   const url = URL.createObjectURL(blob)
   _urls.add(url)
@@ -33,7 +28,6 @@ export const revokeAudioUrl = (url) => {
   }
 }
 
-// Clean up all blob URLs when page unloads
 window.addEventListener('beforeunload', () => {
   _urls.forEach(url => URL.revokeObjectURL(url))
 })

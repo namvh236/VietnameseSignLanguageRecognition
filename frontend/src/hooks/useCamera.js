@@ -5,8 +5,8 @@ export default function useCamera(videoRef, isCameraOn = true) {
 
   useEffect(() => {
     let stream = null
-    // getUserMedia là async: nếu effect bị cleanup (unmount/tắt camera) trước khi
-    // promise resolve thì phải dừng stream ngay khi nhận được, tránh camera treo bật.
+    // getUserMedia is async: if the effect is cleaned up before it resolves, stop the stream
+    // immediately on arrival so the camera doesn't stay on.
     let cancelled = false
 
     const start = async () => {
@@ -15,7 +15,6 @@ export default function useCamera(videoRef, isCameraOn = true) {
       }
 
       try {
-        // Ensure browser supports getUserMedia
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           throw new Error('Trình duyệt không hỗ trợ truy cập camera.')
         }

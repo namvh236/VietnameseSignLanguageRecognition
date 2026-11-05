@@ -1,11 +1,11 @@
-"""Cau hinh logging dung chung. Khong dung print() trong toan bo backend."""
+"""Shared logging setup. Never use print() anywhere in the backend."""
 
 import logging
 
 _FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 _configured = False
 
-# Thu vien ben thu ba log kem emoji/thong tin nhieu -> chi giu tu WARNING tro len.
+# Third-party libs log noisy emoji/info-level output -- keep only WARNING and above.
 _NOISY_PREFIXES = ("Vieneu",)
 
 
